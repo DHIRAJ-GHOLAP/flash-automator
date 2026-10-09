@@ -230,3 +230,69 @@ dist/FlashAutomator/FlashAutomator.exe
    - Click **▶ Run Automation** (or **🔍 Dry Run Mode** to preview safely).
    - The 3-second safety countdown begins.
    - Flash Automator automatically loops through all 31 days, substituting each daily date and generating the corresponding statement!
+
+---
+
+## 🌐 KDMC MyNet Direct HTTP Report Automation (CLI Mode)
+
+In addition to GUI macro recording, Flash Automator features a high-performance, resilient **Direct HTTP Automation Engine** specifically reverse-engineered from KDMC MyNet municipal portal HAR traffic.
+
+Instead of unreliable mouse coordinate clicking, this engine communicates directly with the portal via authenticated HTTP requests, extracts the balance statement table, and renders pixel-perfect vector A4 landscape PDF statements.
+
+### 🔍 Verified Portal Findings
+- **Report POST Endpoint:** `https://kdmc.gov.in/MainetService/AccountFinancialReport.html?report`
+- **Method:** `POST` (`application/x-www-form-urlencoded; charset=UTF-8`)
+- **Required Parameters:** `reportTypeCode=BAS`, `fromDate=DD/MM/YYYY`, `toDate=DD/MM/YYYY`, `accountHeadId=0`, `fieldId=4`
+- **Security:** Spring Security CSRF (`X-CSRF-TOKEN`) synchronized with `JSESSIONID` session cookies.
+- **Export Mechanism:** The application has no server-side PDF route; reports are returned as HTML containing `<div id="receipt">` and printed via JavaScript `PrintDiv('')`. Flash Automator converts this directly into faithful A4 landscape PDF reports (`BankStatement_DD-MM-YYYY.pdf`) using `WeasyPrint`.
+
+### ⚙️ Setup & Configuration
+
+1. Copy `.env.example` to `.env`:
+   ```bash
+   cp .env.example .env
+   ```
+2. Log into the KDMC MyNet portal in your browser, open DevTools (`F12` -> Application/Storage -> Cookies), and copy your `JSESSIONID` cookie value:
+   ```ini
+   KDMC_SESSION_COOKIE=YOUR_JSESSIONID_HERE
+   ```
+
+### 🚀 CLI Usage
+
+#### 1. Single-Date Proof of Concept (Phase 3)
+Validate a single date and export `BankStatement_10-10-2026.pdf`:
+```bash
+python -m flash_automator.cli test-date --date 10/10/2026
+```
+Options:
+- `--save-html`: Save raw server HTML to `./debug/` for diagnostic inspection.
+- `--output-dir <path>`: Specify custom PDF destination directory.
+- `--overwrite`: Re-download even if PDF already exists.
+
+#### 2. Sequential Batch Automation (Phase 6)
+Download a whole month of daily statements sequentially:
+```bash
+python -m flash_automator.cli batch --start 01/10/2026 --end 31/10/2026 --delay 1.5
+```
+Advanced Scheduling & Filtering:
+- `--weekdays-only`: Process Monday through Friday only.
+- `--skip-sundays`: Exclude Sundays from processing.
+- `--exclude-dates 15/10/2026,24/10/2026`: Exclude specific municipal holidays.
+- `--no-resume`: Disable automatic resume; force re-downloading existing files.
+
+#### 3. Date Schedule Preview
+Inspect the calculated dates and skip reasons before sending any network traffic:
+```bash
+python -m flash_automator.cli generate-dates --start 01/10/2026 --end 31/10/2026 --skip-sundays
+```
+
+### 🛡️ Safety, Privacy, and Audit Logs
+- **Secret Redaction:** `SecretRedactorFilter` masks all `JSESSIONID` values, CSRF tokens, and credentials from console and file logs.
+- **Audit Manifest:** Every batch run generates an `execution_manifest.json` recording timestamp, record counts, file locations, and status for full compliance.
+- **Polite Execution:** Sequential requests enforce polite rate-limiting pauses (`KDMC_REQUEST_DELAY`) to avoid overloading municipal infrastructure.
+- **Duplicate Protection:** Existing PDFs are validated and safely preserved unless `--overwrite` is explicitly specified.
+
+### ⚠️ Known Limitations
+1. **Interactive Login:** If the session times out, the operator must re-authenticate in the browser and update `KDMC_SESSION_COOKIE` in `.env`. Automated credential submission is not implemented to respect municipal security controls and potential CAPTCHA/MFA challenges.
+2. **Empty Dates:** Dates with zero transactions return an empty report or `#errorId=Y` flag, which are safely logged as `NO_RECORDS` in the execution manifest rather than crashing.
+

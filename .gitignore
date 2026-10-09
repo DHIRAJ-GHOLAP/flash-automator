@@ -24,3 +24,13 @@ htmlcov/
 *.sqlite3
 *.log
 .DS_Store
+
+# Secrets & Environment variables
+.env
+.env.*
+!.env.example
+
+# Report Outputs & Diagnostics
+output/
+debug/
+*.pdf

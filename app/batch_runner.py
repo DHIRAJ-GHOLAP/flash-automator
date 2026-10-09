@@ -1,0 +1,247 @@
+"""Sequential batch processing runner for date-ranged statement automation.
+
+Processes dates sequentially, enforces rate-limiting pauses, supports resuming
+incomplete batches, creates detailed execution audit manifests, and handles
+graceful user cancellation.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import signal
+import time
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Callable, List, Optional
+
+from app.auth import SessionExpiredError
+from app.client import KDMCClient
+from app.config import AppConfig
+from app.date_engine import DateItem, HTTPDateEngine
+from app.pdf_export import (
+    generate_filename,
+    get_target_file_path,
+    render_html_to_pdf,
+    save_debug_html,
+    validate_pdf_data,
+)
+from app.report_parser import ReportParser, ReportValidationResult
+
+logger = logging.getLogger("flash_automator.batch")
+
+
+@dataclass
+class DateResult:
+    """Audit record for a single processed date."""
+    date: str
+    status: str  # "SUCCESS", "SKIPPED", "NO_RECORDS", "ERROR", "CANCELLED"
+    output_file: Optional[str] = None
+    record_count: int = 0
+    duration_seconds: float = 0.0
+    error_message: Optional[str] = None
+
+
+class BatchRunner:
+    """
+    Orchestrates batch execution over a configured sequence of dates.
+    """
+
+    def __init__(
+        self,
+        client: KDMCClient,
+        config: AppConfig,
+        date_engine: HTTPDateEngine,
+        resume: bool = True,
+        progress_callback: Optional[Callable[[int, int, DateResult], None]] = None,
+    ) -> None:
+        self.client = client
+        self.config = config
+        self.date_engine = date_engine
+        self.resume = resume
+        self.progress_callback = progress_callback
+        self._cancelled = False
+
+        # Register signal handlers for clean cancellation
+        signal.signal(signal.SIGINT, self._handle_signal)
+        signal.signal(signal.SIGTERM, self._handle_signal)
+
+    def _handle_signal(self, signum: int, frame: object) -> None:
+        logger.warning("Cancellation requested by user. Completing current item and halting gracefully...")
+        self._cancelled = True
+
+    def cancel(self) -> None:
+        """Programmatically request cancellation."""
+        self._cancelled = True
+
+    def process_single_date(self, item: DateItem) -> DateResult:
+        """
+        Process a single date: fetch, validate, export PDF, and record audit status.
+        """
+        start_time = time.time()
+        target_path, already_exists = get_target_file_path(
+            output_dir=self.config.output_dir,
+            date_input=item.date,
+            overwrite=self.config.overwrite,
+        )
+
+        # Check resume condition
+        if already_exists and self.resume and not self.config.overwrite:
+            # Check existing file is valid
+            try:
+                with open(target_path, "rb") as f:
+                    pdf_bytes = f.read()
+                is_valid, _, page_count = validate_pdf_data(pdf_bytes)
+                if is_valid:
+                    duration = time.time() - start_time
+                    logger.info(f"[{item.date_str}] Already exists and valid: {target_path.name} (Skipping).")
+                    return DateResult(
+                        date=item.date_str,
+                        status="SKIPPED",
+                        output_file=str(target_path),
+                        record_count=0,
+                        duration_seconds=round(duration, 2),
+                    )
+            except Exception as e:
+                logger.warning(f"Existing file {target_path} corrupted or unreadable ({e}). Will re-download.")
+
+        # 1. Submit report request
+        try:
+            resp = self.client.fetch_report(item.date_str)
+        except SessionExpiredError as e:
+            duration = time.time() - start_time
+            logger.error(f"[{item.date_str}] Session expired: {e}")
+            return DateResult(
+                date=item.date_str,
+                status="ERROR",
+                duration_seconds=round(duration, 2),
+                error_message=f"Session expired: {e}",
+            )
+        except Exception as e:
+            duration = time.time() - start_time
+            logger.error(f"[{item.date_str}] Request failed: {e}")
+            return DateResult(
+                date=item.date_str,
+                status="ERROR",
+                duration_seconds=round(duration, 2),
+                error_message=str(e),
+            )
+
+        # Save debug HTML if enabled
+        if self.config.save_html:
+            debug_file = save_debug_html(resp.text, self.config.debug_dir, item.date_str)
+            logger.debug(f"Saved raw debug HTML to: {debug_file}")
+
+        # 2. Validate response
+        val_res = ReportParser.validate_response(resp.text)
+        if not val_res.is_valid:
+            duration = time.time() - start_time
+            logger.warning(f"[{item.date_str}] Validation failed: {val_res.error_message}")
+            return DateResult(
+                date=item.date_str,
+                status="ERROR",
+                duration_seconds=round(duration, 2),
+                error_message=val_res.error_message,
+            )
+
+        if val_res.is_empty:
+            duration = time.time() - start_time
+            logger.info(f"[{item.date_str}] No records present on server for this date.")
+            return DateResult(
+                date=item.date_str,
+                status="NO_RECORDS",
+                duration_seconds=round(duration, 2),
+                error_message=val_res.error_message,
+            )
+
+        # 3. Extract and export PDF
+        try:
+            clean_html = ReportParser.extract_clean_printable_html(resp.text)
+            pdf_path = render_html_to_pdf(clean_html, target_path)
+            duration = time.time() - start_time
+            logger.info(
+                f"[{item.date_str}] Success! Generated {pdf_path.name} "
+                f"({val_res.record_count} records, {round(duration, 2)}s)"
+            )
+            return DateResult(
+                date=item.date_str,
+                status="SUCCESS",
+                output_file=str(pdf_path),
+                record_count=val_res.record_count,
+                duration_seconds=round(duration, 2),
+            )
+        except Exception as e:
+            duration = time.time() - start_time
+            logger.error(f"[{item.date_str}] PDF export error: {e}")
+            return DateResult(
+                date=item.date_str,
+                status="ERROR",
+                duration_seconds=round(duration, 2),
+                error_message=f"Export failed: {e}",
+            )
+
+    def run(self) -> List[DateResult]:
+        """
+        Execute the batch workflow across all dates in date_engine.
+        """
+        items_to_run = self.date_engine.get_included_items()
+        total_items = len(items_to_run)
+        logger.info(f"Starting batch runner for {total_items} target dates (Delay: {self.config.request_delay}s)...")
+
+        results: List[DateResult] = []
+
+        # Refresh CSRF token if session manager doesn't have one
+        if not self.client.session_manager.csrf_token:
+            logger.info("Initializing session and fetching CSRF token...")
+            try:
+                self.client.refresh_csrf_token()
+            except SessionExpiredError as e:
+                logger.error(f"Cannot start batch: {e}")
+                return results
+
+        for index, item in enumerate(items_to_run, start=1):
+            if self._cancelled:
+                logger.warning("Batch execution halted due to user cancellation.")
+                for remaining_item in items_to_run[index - 1:]:
+                    results.append(DateResult(
+                        date=remaining_item.date_str,
+                        status="CANCELLED",
+                        error_message="Batch cancelled by user",
+                    ))
+                break
+
+            logger.info(f"[{index}/{total_items}] Processing date: {item.date_str} ({item.weekday_name})...")
+            res = self.process_single_date(item)
+            results.append(res)
+
+            if self.progress_callback:
+                self.progress_callback(index, total_items, res)
+
+            # If authentication failure, halt batch immediately
+            if res.status == "ERROR" and res.error_message and "Session expired" in res.error_message:
+                logger.error("Authentication expired during batch. Halting further requests.")
+                break
+
+            # Polite inter-request delay
+            if index < total_items and not self._cancelled:
+                time.sleep(self.config.request_delay)
+
+        self._save_manifest(results)
+        return results
+
+    def _save_manifest(self, results: List[DateResult]) -> Path:
+        """Write execution manifest to output directory for auditability."""
+        manifest_file = self.config.output_dir / "execution_manifest.json"
+        data = {
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "total_processed": len(results),
+            "success_count": sum(1 for r in results if r.status == "SUCCESS"),
+            "skipped_count": sum(1 for r in results if r.status == "SKIPPED"),
+            "no_records_count": sum(1 for r in results if r.status == "NO_RECORDS"),
+            "error_count": sum(1 for r in results if r.status == "ERROR"),
+            "cancelled_count": sum(1 for r in results if r.status == "CANCELLED"),
+            "items": [asdict(r) for r in results],
+        }
+        with open(manifest_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        logger.info(f"Execution manifest saved to: {manifest_file}")
+        return manifest_file
