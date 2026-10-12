@@ -20,13 +20,13 @@ except ImportError:
 logger = logging.getLogger("flash_automator.merge")
 
 DATE_PATTERN = re.compile(
-    r"(?:BankStatement|DepositSlip|\w+)[-_](\d{2})[-_](\d{2})[-_](\d{4})",
+    r"(?:BankStatement|DepositSlip|PaymentSlip|\w+)[-_](\d{2})[-_](\d{2})[-_](\d{4})",
     re.IGNORECASE,
 )
 
 
 def extract_date_from_filename(filename: str) -> Optional[datetime.date]:
-    """Extract datetime.date from a statement filename like BankStatement_10-07-2023.pdf or DepositSlip_10-07-2023.pdf."""
+    """Extract datetime.date from a statement filename like BankStatement_10-07-2023.pdf, DepositSlip_10-07-2023.pdf, or PaymentSlip_10-07-2023.pdf."""
     match = DATE_PATTERN.search(filename)
     if match:
         day, month, year = match.groups()

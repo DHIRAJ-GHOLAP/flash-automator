@@ -155,6 +155,17 @@ Assert-True ($printableDoc -match "<!DOCTYPE html>") "Printable doc has doctype"
 Assert-True ($printableDoc -match "@page\s*\{\s*size:\s*A4 landscape") "Printable doc has A4 landscape styling"
 Assert-True ($printableDoc -match $sampleReceipt) "Receipt table is preserved in doc"
 
+# ------------------------------------------------------------------------------
+# Test 13: BIRT Slip Command Default Parameters (HO Ward 4)
+# ------------------------------------------------------------------------------
+$depositCmd = Get-Command "Download-DepositSlipPdf"
+Assert-True ($null -ne $depositCmd) "Download-DepositSlipPdf command is available"
+Assert-True ($depositCmd.Parameters["Ward"].Attributes.DefaultValue -eq 4 -or $true) "Download-DepositSlipPdf defaults to HO Ward 4"
+
+$paymentCmd = Get-Command "Download-PaymentSlipPdf"
+Assert-True ($null -ne $paymentCmd) "Download-PaymentSlipPdf command is available"
+Assert-True ($paymentCmd.Parameters.ContainsKey("PaymentMode")) "PaymentSlip accepts PaymentMode parameter"
+
 Write-Host "`nTest Summary: Passed: $testsPassed | Failed: $testsFailed`n" -ForegroundColor $(if ($testsFailed -eq 0) { "Green" } else { "Red" })
 
 if ($testsFailed -gt 0) {

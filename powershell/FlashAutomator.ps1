@@ -29,7 +29,7 @@ param (
     [ValidateSet("TestDate", "Batch", "GenerateDates", "Merge", "Help")]
     [string]$Mode = "Help",
 
-    [ValidateSet("BAS", "DepositSlip")]
+    [ValidateSet("BAS", "DepositSlip", "PaymentSlip")]
     [string]$ReportType = "BAS",
 
     [Parameter(ValueFromPipelineByPropertyName = $true)]
@@ -49,6 +49,7 @@ param (
     [string]$OutputFile = "Merged_BankStatements.pdf",
     [switch]$NoBlankPage,
     [switch]$SaveHtml,
+    [switch]$AllPages,
 
     [double]$DelaySeconds = 1.5,
     [switch]$WeekdaysOnly,
@@ -91,7 +92,13 @@ function Execute-SingleDateWorkflow {
         New-Item -ItemType Directory -Path $outDirPath -Force | Out-Null
     }
 
-    $prefix = if ($ReportType -eq "DepositSlip") { "DepositSlip" } else { "BankStatement" }
+    $prefix = if ($ReportType -eq "DepositSlip") {
+        "DepositSlip"
+    } elseif ($ReportType -eq "PaymentSlip") {
+        "PaymentSlip"
+    } else {
+        "BankStatement"
+    }
     $htmlTarget = Join-Path $outDirPath "$($prefix)_$cleanDate.html"
     $pdfTarget = Join-Path $outDirPath "$($prefix)_$cleanDate.pdf"
 
@@ -114,7 +121,7 @@ function Execute-SingleDateWorkflow {
     # Deposit Slip Workflow (Direct BIRT vector PDF)
     if ($ReportType -eq "DepositSlip") {
         try {
-            $bytesDownloaded = Download-DepositSlipPdf -TargetDateStr $TargetDateStr -DestinationPath $pdfTarget -SessionCookie $script:SessionCookie
+            $bytesDownloaded = Download-DepositSlipPdf -TargetDateStr $TargetDateStr -DestinationPath $pdfTarget -SessionCookie $script:SessionCookie -LastPageOnly:(-not $AllPages)
             Log-Success "[$TargetDateStr] Generated Deposit Slip PDF: $([System.IO.Path]::GetFileName($pdfTarget)) ($bytesDownloaded bytes)"
             $resObj = New-Object PSObject
             $resObj | Add-Member -MemberType NoteProperty -Name "Date" -Value $TargetDateStr
@@ -124,6 +131,27 @@ function Execute-SingleDateWorkflow {
             return $resObj
         } catch {
             Log-ErrorMsg "[$TargetDateStr] Deposit Slip download failed: $_"
+            $resObj = New-Object PSObject
+            $resObj | Add-Member -MemberType NoteProperty -Name "Date" -Value $TargetDateStr
+            $resObj | Add-Member -MemberType NoteProperty -Name "Status" -Value "ERROR"
+            $resObj | Add-Member -MemberType NoteProperty -Name "Error" -Value "$_"
+            return $resObj
+        }
+    }
+
+    # Payment Slip Workflow (Direct BIRT vector PDF)
+    if ($ReportType -eq "PaymentSlip") {
+        try {
+            $bytesDownloaded = Download-PaymentSlipPdf -TargetDateStr $TargetDateStr -DestinationPath $pdfTarget -SessionCookie $script:SessionCookie -LastPageOnly:(-not $AllPages)
+            Log-Success "[$TargetDateStr] Generated Payment Slip PDF: $([System.IO.Path]::GetFileName($pdfTarget)) ($bytesDownloaded bytes)"
+            $resObj = New-Object PSObject
+            $resObj | Add-Member -MemberType NoteProperty -Name "Date" -Value $TargetDateStr
+            $resObj | Add-Member -MemberType NoteProperty -Name "Status" -Value "SUCCESS"
+            $resObj | Add-Member -MemberType NoteProperty -Name "File" -Value $pdfTarget
+            $resObj | Add-Member -MemberType NoteProperty -Name "Records" -Value 1
+            return $resObj
+        } catch {
+            Log-ErrorMsg "[$TargetDateStr] Payment Slip download failed: $_"
             $resObj = New-Object PSObject
             $resObj | Add-Member -MemberType NoteProperty -Name "Date" -Value $TargetDateStr
             $resObj | Add-Member -MemberType NoteProperty -Name "Status" -Value "ERROR"
@@ -332,6 +360,11 @@ switch ($Mode) {
                 if (-not $OutputFile -or $OutputFile -eq "Merged_BankStatements.pdf") {
                     $OutputFile = "Merged_DepositSlips.pdf"
                 }
+            } elseif ($ReportType -eq "PaymentSlip") {
+                $mergeArgs += @("--prefix", "PaymentSlip")
+                if (-not $OutputFile -or $OutputFile -eq "Merged_BankStatements.pdf") {
+                    $OutputFile = "Merged_PaymentSlips.pdf"
+                }
             }
             if ($OutputFile) {
                 $mergeArgs += @("--output-file", $OutputFile)
@@ -356,10 +389,12 @@ Commands:
   1. Single-Date Proof of Concept:
      .\FlashAutomator.ps1 -Mode TestDate -Date "10/10/2026"
      .\FlashAutomator.ps1 -Mode TestDate -ReportType DepositSlip -Date "01/07/2023"
+     .\FlashAutomator.ps1 -Mode TestDate -ReportType PaymentSlip -Date "01/07/2023"
 
   2. Sequential Month Batch Automation:
      .\FlashAutomator.ps1 -Mode Batch -StartDate "01/10/2026" -EndDate "31/10/2026"
      .\FlashAutomator.ps1 -Mode Batch -ReportType DepositSlip -StartDate "01/07/2023" -EndDate "31/07/2023"
+     .\FlashAutomator.ps1 -Mode Batch -ReportType PaymentSlip -StartDate "01/07/2023" -EndDate "31/07/2023"
 
   3. Batch Skipping Sundays:
      .\FlashAutomator.ps1 -Mode Batch -StartDate "01/10/2026" -EndDate "31/10/2026" -SkipSundays
@@ -370,9 +405,11 @@ Commands:
   5. Merge Generated PDFs with 1 Blank Page Separator:
      .\FlashAutomator.ps1 -Mode Merge
      .\FlashAutomator.ps1 -Mode Merge -ReportType DepositSlip
+     .\FlashAutomator.ps1 -Mode Merge -ReportType PaymentSlip
 
 Parameters:
-  -ReportType <BAS|DepositSlip> Type of report to generate (default: BAS)
+  -ReportType <BAS|DepositSlip|PaymentSlip> Type of report to generate (default: BAS)
+  -AllPages                     Download all pages instead of only the last summary page for slips
   -DelaySeconds <float>         Pause between requests in seconds (default: 1.5)
   -OutputDir <path>             Destination folder for statements (default: ./output)
   -OutputFile <string>          Filename for merged PDF (default: Merged_BankStatements.pdf)

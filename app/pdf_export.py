@@ -7,10 +7,14 @@ and prevents accidental file overwrites.
 from __future__ import annotations
 
 import datetime
+import io
+import logging
 import os
 import re
 from pathlib import Path
 from typing import Optional, Tuple
+
+logger = logging.getLogger("flash_automator.export")
 
 try:
     import weasyprint
@@ -95,12 +99,40 @@ def get_target_file_path(
     return target_path, False
 
 
+def extract_last_page_pdf(pdf_bytes: bytes) -> bytes:
+    """
+    Extract only the final page of a multi-page PDF document.
+    Municipal daily deposit and payment slips contain detailed receipt rows,
+    while the final page contains the Grand Total summary and daily totals.
+    If the document has 1 page or pypdf is unavailable, returns the original bytes.
+    """
+    if not PYPDF_AVAILABLE or not pdf_bytes:
+        return pdf_bytes
+
+    try:
+        reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
+        total_pages = len(reader.pages)
+        if total_pages <= 1:
+            return pdf_bytes
+
+        writer = pypdf.PdfWriter()
+        writer.add_page(reader.pages[-1])
+        output_buffer = io.BytesIO()
+        writer.write(output_buffer)
+        return output_buffer.getvalue()
+    except Exception as e:
+        logger.warning(f"Could not extract last page from PDF ({e}); using original PDF.")
+        return pdf_bytes
+
+
 def save_pdf_bytes(
     pdf_bytes: bytes,
     output_path: Path | str,
+    last_page_only: bool = False,
 ) -> Path:
     """
     Validate and save direct PDF bytes to destination output_path.
+    If last_page_only is True, extracts only the final summary page.
     """
     target = Path(output_path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -108,6 +140,9 @@ def save_pdf_bytes(
     is_valid, reason, _ = validate_pdf_data(pdf_bytes)
     if not is_valid:
         raise PDFValidationError(f"Received PDF failed validation: {reason}")
+
+    if last_page_only:
+        pdf_bytes = extract_last_page_pdf(pdf_bytes)
 
     with open(target, "wb") as f:
         f.write(pdf_bytes)
@@ -127,7 +162,7 @@ def validate_pdf_data(pdf_bytes: bytes) -> Tuple[bool, str, int]:
     if not pdf_bytes:
         return False, "PDF content is empty (0 bytes)", 0
 
-    if len(pdf_bytes) < 1024:
+    if len(pdf_bytes) < 256:
         return False, f"PDF file size too small ({len(pdf_bytes)} bytes); likely truncated or error response", 0
 
     if not pdf_bytes.startswith(PDF_MAGIC_BYTES):

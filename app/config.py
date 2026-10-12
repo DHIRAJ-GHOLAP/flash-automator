@@ -22,9 +22,10 @@ DEFAULT_FIELD_ID = 4  # HO Main Branch
 DEFAULT_ACCOUNT_HEAD_ID = 0  # All Accounts
 DEFAULT_BIRT_OUTPUT_URL = "https://kdmc.gov.in/birtPA/output"
 DEFAULT_ULB_NAME = 1  # Kalyan Dombivli Municipal Corporation
-DEFAULT_WARD = 0  # ALL
+DEFAULT_WARD = 4  # HO Main Branch (Ward 4)
 DEFAULT_BANK = 0  # ALL
-DEFAULT_MODE = "X"  # ALL
+DEFAULT_MODE = "X"  # ALL (Deposit Slip)
+DEFAULT_PAYMENT_MODE = "0"  # ALL (Payment Slip)
 DEFAULT_CONNECT_TIMEOUT = 10.0
 DEFAULT_READ_TIMEOUT = 30.0
 DEFAULT_REQUEST_DELAY = 1.5
@@ -48,6 +49,8 @@ class AppConfig:
     ward: int = DEFAULT_WARD
     bank: int = DEFAULT_BANK
     mode: str = DEFAULT_MODE
+    payment_mode: str = DEFAULT_PAYMENT_MODE
+    last_page_only: bool = True
     connect_timeout: float = DEFAULT_CONNECT_TIMEOUT
     read_timeout: float = DEFAULT_READ_TIMEOUT
     request_delay: float = DEFAULT_REQUEST_DELAY
@@ -65,13 +68,33 @@ class AppConfig:
             "DEPOSIT_SLIP",
             "DEPOSITSLIP",
             "DEPOSIT-SLIP",
+            "DEPOSIT",
             "SLIP",
         )
 
     @property
+    def is_payment_slip(self) -> bool:
+        """True if the configured report type is Payment Slip."""
+        return self.report_type_code.upper() in (
+            "PAYMENT_SLIP",
+            "PAYMENTSLIP",
+            "PAYMENT-SLIP",
+            "PAYMENT",
+        )
+
+    @property
+    def is_birt_report(self) -> bool:
+        """True if report is rendered by Eclipse BIRT engine."""
+        return self.is_deposit_slip or self.is_payment_slip
+
+    @property
     def filename_prefix(self) -> str:
         """Standard filename prefix for the active report type."""
-        return "DepositSlip" if self.is_deposit_slip else "BankStatement"
+        if self.is_deposit_slip:
+            return "DepositSlip"
+        elif self.is_payment_slip:
+            return "PaymentSlip"
+        return "BankStatement"
 
     @property
     def report_url(self) -> str:
@@ -169,6 +192,8 @@ def load_config(env_path: Optional[Path | str] = None) -> AppConfig:
         bank = DEFAULT_BANK
 
     mode = os.getenv("KDMC_MODE", DEFAULT_MODE).strip()
+    payment_mode = os.getenv("KDMC_PAYMENT_MODE", DEFAULT_PAYMENT_MODE).strip()
+    last_page_only = os.getenv("KDMC_LAST_PAGE_ONLY", "true").lower() in ("true", "1", "yes")
 
     output_dir_str = os.getenv("KDMC_OUTPUT_DIR", DEFAULT_OUTPUT_DIR)
     debug_dir_str = os.getenv("KDMC_DEBUG_DIR", DEFAULT_DEBUG_DIR)
@@ -186,6 +211,8 @@ def load_config(env_path: Optional[Path | str] = None) -> AppConfig:
         ward=ward,
         bank=bank,
         mode=mode,
+        payment_mode=payment_mode,
+        last_page_only=last_page_only,
         connect_timeout=connect_timeout,
         read_timeout=read_timeout,
         request_delay=request_delay,

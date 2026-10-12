@@ -268,10 +268,72 @@ class KDMCClient:
                 else:
                     raise KDMCNetworkError(f"Persistent network failure requesting date {date_str}: {e}") from e
 
+    def fetch_payment_slip(self, date_str: str) -> requests.Response:
+        """
+        Fetch Deposit Slip Payment Detail Report for a single date.
+        Directly requests the BIRT output servlet and returns the server-generated PDF.
+        """
+        params = {
+            "__report": "DepositSlip_PaymentDetailReport.rptdesign",
+            "__format": "pdf",
+            "ULBName": str(self.config.ulb_name),
+            "Ward": str(self.config.ward),
+            "Bank": str(self.config.bank),
+            "PaymentMode": str(self.config.payment_mode),
+            "FromDate": date_str,
+            "ToDate": date_str,
+        }
+        retries = 0
+        backoff = self.config.retry_backoff
+
+        while True:
+            try:
+                logger.debug(f"Requesting Payment Slip PDF for date: {date_str} (attempt {retries + 1})")
+                resp = self.session.get(
+                    self.config.birt_output_url,
+                    params=params,
+                    timeout=(self.config.connect_timeout, self.config.read_timeout),
+                    allow_redirects=True,
+                )
+
+                # Check session expiration
+                is_expired, reason = self.session_manager.check_session_status(resp)
+                if is_expired:
+                    logger.error(f"Authentication failure: {reason}")
+                    raise SessionExpiredError(f"Session expired or invalid: {reason}")
+
+                if resp.status_code in (502, 503, 504):
+                    if retries < self.config.max_retries:
+                        retries += 1
+                        logger.warning(
+                            f"HTTP {resp.status_code} received. Retrying in {backoff:.1f}s (attempt {retries}/{self.config.max_retries})..."
+                        )
+                        time.sleep(backoff)
+                        backoff *= 1.5
+                        continue
+                    else:
+                        resp.raise_for_status()
+
+                return resp
+
+            except (requests.ConnectionError, requests.Timeout) as e:
+                if retries < self.config.max_retries:
+                    retries += 1
+                    logger.warning(
+                        f"Network error ({type(e).__name__}). Retrying in {backoff:.1f}s (attempt {retries}/{self.config.max_retries})..."
+                    )
+                    time.sleep(backoff)
+                    backoff *= 1.5
+                    continue
+                else:
+                    raise KDMCNetworkError(f"Persistent network failure requesting date {date_str}: {e}") from e
+
     def fetch_report(self, date_str: str) -> requests.Response:
         """
         Fetch report for a single date, routing dynamically based on configured report type.
         """
         if self.config.is_deposit_slip:
             return self.fetch_deposit_slip(date_str)
+        elif self.config.is_payment_slip:
+            return self.fetch_payment_slip(date_str)
         return self.fetch_bank_statement(date_str)

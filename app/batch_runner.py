@@ -129,16 +129,22 @@ class BatchRunner:
                 error_message=str(e),
             )
 
-        # Deposit Slip workflow (Direct BIRT vector PDF)
-        if self.config.is_deposit_slip:
+        # BIRT report workflow (Deposit Slip / Payment Slip - Direct BIRT vector PDF)
+        if self.config.is_birt_report:
             if resp.content.startswith(b"%PDF-"):
                 try:
-                    pdf_path = save_pdf_bytes(resp.content, target_path)
-                    is_valid, _, page_count = validate_pdf_data(resp.content)
+                    pdf_path = save_pdf_bytes(
+                        resp.content,
+                        target_path,
+                        last_page_only=self.config.last_page_only,
+                    )
+                    with open(pdf_path, "rb") as f:
+                        saved_bytes = f.read()
+                    is_valid, _, page_count = validate_pdf_data(saved_bytes)
                     duration = time.time() - start_time
                     logger.info(
                         f"[{item.date_str}] Success! Generated {pdf_path.name} "
-                        f"({page_count} pages, {round(duration, 2)}s)"
+                        f"({page_count} page{'s' if page_count != 1 else ''}, {round(duration, 2)}s)"
                     )
                     return DateResult(
                         date=item.date_str,
