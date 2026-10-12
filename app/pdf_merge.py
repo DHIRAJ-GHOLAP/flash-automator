@@ -117,6 +117,7 @@ def merge_statement_pdfs(
     pdf_paths: List[Path],
     output_path: Path | str,
     insert_blank_page: bool = True,
+    only_last_page_for_slips: bool = False,
 ) -> Tuple[Path, int, int]:
     """
     Merge a list of PDF files into a single document.
@@ -126,6 +127,8 @@ def merge_statement_pdfs(
         output_path: Destination path for the merged PDF.
         insert_blank_page: If True, inserts one blank page between consecutive PDFs.
                           (No blank page is added after the final PDF).
+        only_last_page_for_slips: If True, only extracts the final summary page of
+                                  deposit slip and payment slip PDFs.
                           
     Returns:
         Tuple of (output_path: Path, total_documents_merged: int, total_pages_in_output: int)
@@ -148,9 +151,14 @@ def merge_statement_pdfs(
                 logger.warning(f"Skipping empty PDF: {path.name}")
                 continue
 
-            # Add all pages of this document
-            for page in reader.pages:
-                writer.add_page(page)
+            # Check if this document is a deposit slip or payment slip
+            is_slip = "deposit" in path.name.lower() or "payment" in path.name.lower()
+            if only_last_page_for_slips and is_slip and doc_pages > 1:
+                logger.debug(f"Extracting only the last summary page for {path.name} ({doc_pages} pages -> 1 page)")
+                writer.add_page(reader.pages[-1])
+            else:
+                for page in reader.pages:
+                    writer.add_page(page)
 
             # Insert one blank page between documents (not after the last document)
             if insert_blank_page and i < total_docs:
@@ -304,4 +312,5 @@ def generate_final_cashbook(
         pdf_paths=ordered_paths,
         output_path=out_file,
         insert_blank_page=insert_blank_page,
+        only_last_page_for_slips=True,
     )

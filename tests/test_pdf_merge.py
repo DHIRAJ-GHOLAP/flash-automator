@@ -167,3 +167,27 @@ def test_generate_final_cashbook(tmp_path: Path):
     reader = pypdf.PdfReader(str(out_file))
     assert len(reader.pages) == 11
 
+
+def test_generate_final_cashbook_extracts_last_page_for_multi_page_slips(tmp_path: Path):
+    # Bank statement: 3 pages
+    # Deposit slip: 4 pages (must be trimmed to last page only)
+    # Payment slip: 5 pages (must be trimmed to last page only)
+    _create_dummy_pdf(tmp_path / "BankStatement_01-07-2023.pdf", num_pages=3)
+    _create_dummy_pdf(tmp_path / "DepositSlip_01-07-2023.pdf", num_pages=4)
+    _create_dummy_pdf(tmp_path / "PaymentSlip_01-07-2023.pdf", num_pages=5)
+
+    out_file, doc_count, total_pages = generate_final_cashbook(
+        input_dir=tmp_path,
+        month=7,
+        year=2023,
+        insert_blank_page=True,
+    )
+
+    assert doc_count == 3
+    # 3 (bank) + 1 (blank) + 1 (deposit last page) + 1 (blank) + 1 (payment last page) = 7 pages
+    assert total_pages == 7
+
+    reader = pypdf.PdfReader(str(out_file))
+    assert len(reader.pages) == 7
+
+
