@@ -283,7 +283,22 @@ Advanced Scheduling & Filtering:
 #### 3. Date Schedule Preview
 Inspect the calculated dates and skip reasons before sending any network traffic:
 ```bash
-python -m flash_automator.cli generate-dates --start 01/10/2026 --end 31/10/2026 --skip-sundays
+python -m app.cli generate-dates --start 01/10/2026 --end 31/10/2026 --skip-sundays
+```
+
+#### 4. Merge Statements into Single PDF (with Blank Separator Pages)
+Merge all generated daily statement PDFs into a single file in chronological date order, inserting **exactly one blank/empty page** between each statement for duplex printing / physical filing:
+```bash
+python -m app.cli merge
+```
+Options:
+- `--input-dir <dir>`: Folder containing statement PDFs (default: `./output`).
+- `--output-file <file>`: Name or path for combined PDF (default: `Merged_BankStatements.pdf`).
+- `--no-blank-page`: Disable insertion of blank separator pages between statements.
+
+Example:
+```bash
+python -m app.cli merge --output-file Merged_July_2023.pdf
 ```
 
 ### 🛡️ Safety, Privacy, and Audit Logs
@@ -319,6 +334,9 @@ Run-FlashAutomator.bat -Mode Batch -StartDate "01/10/2026" -EndDate "31/10/2026"
 
 :: Date Schedule Preview:
 Run-FlashAutomator.bat -Mode GenerateDates -StartDate "01/10/2026" -EndDate "31/10/2026"
+
+:: Merge All PDFs with 1 Blank Page Separator:
+Run-FlashAutomator.bat -Mode Merge
 ```
 For complete details and troubleshooting, see [`powershell/README_WINDOWS7.md`](powershell/README_WINDOWS7.md).
 

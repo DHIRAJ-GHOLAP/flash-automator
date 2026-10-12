@@ -237,8 +237,55 @@ def cmd_generate_dates(args: argparse.Namespace) -> int:
         print(f"{i:<4} {item.date_str:<12} {item.weekday_name:<11} {status:<10} {reason}")
 
     print("-" * 65)
-    print(f"Total: {len(all_items)} | Included: {included_count} | Skipped: {skipped_count}")
-    return 0
+from app.pdf_merge import get_sorted_statement_pdfs, merge_statement_pdfs
+
+
+def cmd_merge(args: argparse.Namespace, config: AppConfig) -> int:
+    """Merge all generated statement PDFs with one empty page in between."""
+    input_dir = Path(args.input_dir) if args.input_dir else config.output_dir
+    logger.info(f"--- Merging Bank Statement PDFs from {input_dir} ---")
+
+    try:
+        pdf_files = get_sorted_statement_pdfs(input_dir)
+    except FileNotFoundError as e:
+        logger.error(str(e))
+        return 1
+
+    if not pdf_files:
+        logger.error(f"No statement PDF files found in directory: {input_dir}")
+        return 1
+
+    logger.info(f"Found {len(pdf_files)} PDF statements to merge in chronological order:")
+    for i, f in enumerate(pdf_files, 1):
+        logger.info(f"  {i:>2}. {f.name}")
+
+    if args.output_file:
+        out_path = Path(args.output_file)
+        if not out_path.is_absolute() and not str(out_path).startswith((".", "/")):
+            out_path = input_dir / out_path
+    else:
+        out_path = input_dir / "Merged_BankStatements.pdf"
+
+    insert_blank = not args.no_blank_page
+    logger.info(
+        f"Blank separator page between PDFs: "
+        f"{'ENABLED (1 blank page between PDFs)' if insert_blank else 'DISABLED'}"
+    )
+
+    try:
+        final_path, count, total_pages = merge_statement_pdfs(
+            pdf_paths=pdf_files,
+            output_path=out_path,
+            insert_blank_page=insert_blank,
+        )
+        logger.info(f"Successfully generated merged PDF: {final_path}")
+        logger.info(f"Total Statements Merged: {count}")
+        logger.info(f"Total Pages in Output:   {total_pages}")
+        logger.info(f"Merged File Size:        {final_path.stat().st_size:,} bytes")
+        return 0
+    except Exception as e:
+        logger.error(f"Failed to merge PDFs: {e}")
+        return 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -385,6 +432,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated dates to exclude",
     )
 
+    # Subcommand: merge
+    p_merge = subparsers.add_parser(
+        "merge",
+        help="Merge all statement PDFs in chronological order with 1 blank page in between",
+    )
+    p_merge.add_argument(
+        "--input-dir",
+        type=str,
+        default=None,
+        help="Directory containing statement PDFs (default: ./output)",
+    )
+    p_merge.add_argument(
+        "--output-file",
+        type=str,
+        default=None,
+        help="Destination merged PDF filename or path (default: Merged_BankStatements.pdf)",
+    )
+    p_merge.add_argument(
+        "--no-blank-page",
+        action="store_true",
+        help="Do not insert a blank separator page between statements",
+    )
+
     return parser
 
 
@@ -409,6 +479,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return cmd_test_date(args, config)
     elif args.subcommand == "batch":
         return cmd_batch(args, config)
+    elif args.subcommand == "merge":
+        return cmd_merge(args, config)
 
     return 0
 

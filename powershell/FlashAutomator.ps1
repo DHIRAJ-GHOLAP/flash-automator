@@ -27,7 +27,7 @@
 [CmdletBinding()]
 param (
     [Parameter(Position = 0)]
-    [ValidateSet("TestDate", "Batch", "GenerateDates", "Help")]
+    [ValidateSet("TestDate", "Batch", "GenerateDates", "Merge", "Help")]
     [string]$Mode = "Help",
 
     [Parameter(ValueFromPipelineByPropertyName = $true)]
@@ -44,6 +44,8 @@ param (
 
     [string]$OutputDir = "./output",
     [string]$DebugDir = "./debug",
+    [string]$OutputFile = "Merged_BankStatements.pdf",
+    [switch]$NoBlankPage,
     [switch]$SaveHtml,
 
     [double]$DelaySeconds = 1.5,
@@ -289,6 +291,32 @@ switch ($Mode) {
         exit 0
     }
 
+    "Merge" {
+        Log-Info "--- Running PDF Statement Merge Workflow ---"
+        $pyCmd = $null
+        if (Get-Command "python3" -ErrorAction SilentlyContinue) {
+            $pyCmd = "python3"
+        } elseif (Get-Command "python" -ErrorAction SilentlyContinue) {
+            $pyCmd = "python"
+        }
+
+        if ($pyCmd) {
+            $mergeArgs = @("-m", "app.cli", "merge", "--input-dir", $OutputDir)
+            if ($OutputFile) {
+                $mergeArgs += @("--output-file", $OutputFile)
+            }
+            if ($NoBlankPage) {
+                $mergeArgs += "--no-blank-page"
+            }
+            Log-Info "Delegating PDF merge to $pyCmd with blank separator page insertion..."
+            & $pyCmd $mergeArgs
+            exit $LASTEXITCODE
+        } else {
+            Log-ErrorMsg "Python runtime with 'pypdf' installed is required for PDF manipulation. Run: python -m app.cli merge"
+            exit 1
+        }
+    }
+
     Default {
         Write-Host @"
 Flash Automator (PowerShell Engine for Windows 7 / 10 / 11)
@@ -306,9 +334,15 @@ Commands:
   4. Date Preview without Network Traffic:
      .\FlashAutomator.ps1 -Mode GenerateDates -StartDate "01/10/2026" -EndDate "31/10/2026" -SkipSundays
 
+  5. Merge Generated PDFs with 1 Blank Page Separator:
+     .\FlashAutomator.ps1 -Mode Merge
+     .\FlashAutomator.ps1 -Mode Merge -OutputFile "Merged_July_2023.pdf"
+
 Parameters:
   -DelaySeconds <float>   Pause between requests in seconds (default: 1.5)
   -OutputDir <path>       Destination folder for statements (default: ./output)
+  -OutputFile <string>    Filename for merged PDF (default: Merged_BankStatements.pdf)
+  -NoBlankPage            Disable insertion of blank separator pages between statements
   -SaveHtml               Save raw server HTML for debugging
   -Overwrite              Re-download statements even if file exists
   -SkipCertificateCheck   Bypass SSL certificate checks on legacy Windows 7

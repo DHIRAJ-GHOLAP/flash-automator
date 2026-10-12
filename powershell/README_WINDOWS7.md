@@ -60,6 +60,13 @@ Previews the date range and verified skip reasons without sending network reques
 Run-FlashAutomator.bat -Mode GenerateDates -StartDate "01/10/2026" -EndDate "31/10/2026" -SkipSundays
 ```
 
+#### 4. Merge All Daily PDFs (with 1 Blank Page Separator)
+Merges all generated statements chronologically into one PDF with 1 blank separator page between each daily report:
+```cmd
+Run-FlashAutomator.bat -Mode Merge
+```
+*(Requires Python on the system for PDF processing).*
+
 ---
 
 ## 📁 Output & Printing on Windows 7
