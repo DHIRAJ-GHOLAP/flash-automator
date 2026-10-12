@@ -296,3 +296,30 @@ python -m flash_automator.cli generate-dates --start 01/10/2026 --end 31/10/2026
 1. **Interactive Login:** If the session times out, the operator must re-authenticate in the browser and update `KDMC_SESSION_COOKIE` in `.env`. Automated credential submission is not implemented to respect municipal security controls and potential CAPTCHA/MFA challenges.
 2. **Empty Dates:** Dates with zero transactions return an empty report or `#errorId=Y` flag, which are safely logged as `NO_RECORDS` in the execution manifest rather than crashing.
 
+---
+
+## 🪟 Native PowerShell Engine for Windows 7 / 10 / 11
+
+For legacy municipal workstations running **Windows 7 SP1** without Python installed, Flash Automator includes a 100% native PowerShell engine located in [`powershell/`](powershell/):
+
+- **Zero Runtime Dependencies:** Runs directly on built-in PowerShell 2.0 / 3.0 / 5.1 and .NET 3.5/4.x without requiring Python or external packages.
+- **Automatic TLS 1.2 Activation:** Overcomes Windows 7's default TLS 1.0 limitation to connect securely to the portal.
+- **Double-Click Batch Launcher:** Includes [`Run-FlashAutomator.bat`](powershell/Run-FlashAutomator.bat) with automatic execution policy bypass.
+- **Print & PDF Output:** Generates standalone, A4 landscape print-ready HTML statements and automatically exports PDFs if Chrome, Edge, Brave, or `wkhtmltopdf` is present.
+
+### Quick Windows 7 Usage
+```cmd
+cd powershell
+
+:: Single Date Test:
+Run-FlashAutomator.bat -Mode TestDate -Date "10/10/2026"
+
+:: Sequential Month Batch:
+Run-FlashAutomator.bat -Mode Batch -StartDate "01/10/2026" -EndDate "31/10/2026" -SkipSundays
+
+:: Date Schedule Preview:
+Run-FlashAutomator.bat -Mode GenerateDates -StartDate "01/10/2026" -EndDate "31/10/2026"
+```
+For complete details and troubleshooting, see [`powershell/README_WINDOWS7.md`](powershell/README_WINDOWS7.md).
+
+
