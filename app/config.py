@@ -20,6 +20,11 @@ DEFAULT_BASE_URL = "https://kdmc.gov.in/MainetService"
 DEFAULT_REPORT_TYPE = "BAS"
 DEFAULT_FIELD_ID = 4  # HO Main Branch
 DEFAULT_ACCOUNT_HEAD_ID = 0  # All Accounts
+DEFAULT_BIRT_OUTPUT_URL = "https://kdmc.gov.in/birtPA/output"
+DEFAULT_ULB_NAME = 1  # Kalyan Dombivli Municipal Corporation
+DEFAULT_WARD = 0  # ALL
+DEFAULT_BANK = 0  # ALL
+DEFAULT_MODE = "X"  # ALL
 DEFAULT_CONNECT_TIMEOUT = 10.0
 DEFAULT_READ_TIMEOUT = 30.0
 DEFAULT_REQUEST_DELAY = 1.5
@@ -33,11 +38,16 @@ DEFAULT_DEBUG_DIR = "./debug"
 class AppConfig:
     """Application configuration parameters."""
     base_url: str = DEFAULT_BASE_URL
+    birt_output_url: str = DEFAULT_BIRT_OUTPUT_URL
     session_cookie: Optional[str] = None
     csrf_token: Optional[str] = None
     report_type_code: str = DEFAULT_REPORT_TYPE
     field_id: int = DEFAULT_FIELD_ID
     account_head_id: int = DEFAULT_ACCOUNT_HEAD_ID
+    ulb_name: int = DEFAULT_ULB_NAME
+    ward: int = DEFAULT_WARD
+    bank: int = DEFAULT_BANK
+    mode: str = DEFAULT_MODE
     connect_timeout: float = DEFAULT_CONNECT_TIMEOUT
     read_timeout: float = DEFAULT_READ_TIMEOUT
     request_delay: float = DEFAULT_REQUEST_DELAY
@@ -47,6 +57,21 @@ class AppConfig:
     debug_dir: Path = field(default_factory=lambda: Path(DEFAULT_DEBUG_DIR))
     save_html: bool = False
     overwrite: bool = False
+
+    @property
+    def is_deposit_slip(self) -> bool:
+        """True if the configured report type is Deposit Slip."""
+        return self.report_type_code.upper() in (
+            "DEPOSIT_SLIP",
+            "DEPOSITSLIP",
+            "DEPOSIT-SLIP",
+            "SLIP",
+        )
+
+    @property
+    def filename_prefix(self) -> str:
+        """Standard filename prefix for the active report type."""
+        return "DepositSlip" if self.is_deposit_slip else "BankStatement"
 
     @property
     def report_url(self) -> str:
@@ -127,17 +152,40 @@ def load_config(env_path: Optional[Path | str] = None) -> AppConfig:
     except ValueError:
         max_retries = DEFAULT_MAX_RETRIES
 
+    birt_output_url = os.getenv("KDMC_BIRT_OUTPUT_URL", DEFAULT_BIRT_OUTPUT_URL).strip()
+    try:
+        ulb_name = int(os.getenv("KDMC_ULB_NAME", str(DEFAULT_ULB_NAME)))
+    except ValueError:
+        ulb_name = DEFAULT_ULB_NAME
+
+    try:
+        ward = int(os.getenv("KDMC_WARD", str(DEFAULT_WARD)))
+    except ValueError:
+        ward = DEFAULT_WARD
+
+    try:
+        bank = int(os.getenv("KDMC_BANK", str(DEFAULT_BANK)))
+    except ValueError:
+        bank = DEFAULT_BANK
+
+    mode = os.getenv("KDMC_MODE", DEFAULT_MODE).strip()
+
     output_dir_str = os.getenv("KDMC_OUTPUT_DIR", DEFAULT_OUTPUT_DIR)
     debug_dir_str = os.getenv("KDMC_DEBUG_DIR", DEFAULT_DEBUG_DIR)
     save_html_val = os.getenv("KDMC_SAVE_HTML", "false").lower() in ("true", "1", "yes")
 
     return AppConfig(
         base_url=base_url,
+        birt_output_url=birt_output_url,
         session_cookie=session_cookie if session_cookie else None,
         csrf_token=csrf_token if csrf_token else None,
         report_type_code=report_type_code,
         field_id=field_id,
         account_head_id=account_head_id,
+        ulb_name=ulb_name,
+        ward=ward,
+        bank=bank,
+        mode=mode,
         connect_timeout=connect_timeout,
         read_timeout=read_timeout,
         request_delay=request_delay,

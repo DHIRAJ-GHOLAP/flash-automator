@@ -34,19 +34,23 @@ It is specifically engineered to run out-of-the-box on legacy **Windows 7 SP1** 
 You can run commands using **`Run-FlashAutomator.bat`** (double-clickable or via Command Prompt) or directly via **PowerShell**:
 
 #### 1. Single-Date Proof of Concept
-Tests downloading a statement for a single date:
+Tests downloading a statement or deposit slip for a single date:
 ```cmd
+:: Bank Account Statement (BAS):
 Run-FlashAutomator.bat -Mode TestDate -Date "10/10/2026"
-```
-*Or in PowerShell:*
-```powershell
-powershell.exe -ExecutionPolicy Bypass -File .\FlashAutomator.ps1 -Mode TestDate -Date "10/10/2026"
+
+:: Deposit Slip Report:
+Run-FlashAutomator.bat -Mode TestDate -ReportType DepositSlip -Date "01/07/2023"
 ```
 
 #### 2. Sequential Month Batch Processing
 Loops through every day of the month sequentially with polite 1.5s pauses:
 ```cmd
-Run-FlashAutomator.bat -Mode Batch -StartDate "01/10/2026" -EndDate "31/10/2026" -DelaySeconds 1.5
+:: Bank Account Statements:
+Run-FlashAutomator.bat -Mode Batch -StartDate "01/07/2023" -EndDate "31/07/2023" -DelaySeconds 1.5
+
+:: Deposit Slips:
+Run-FlashAutomator.bat -Mode Batch -ReportType DepositSlip -StartDate "01/07/2023" -EndDate "31/07/2023" -DelaySeconds 1.5
 ```
 *Advanced options:*
 - **Skip Sundays:** `-SkipSundays`
@@ -61,9 +65,13 @@ Run-FlashAutomator.bat -Mode GenerateDates -StartDate "01/10/2026" -EndDate "31/
 ```
 
 #### 4. Merge All Daily PDFs (with 1 Blank Page Separator)
-Merges all generated statements chronologically into one PDF with 1 blank separator page between each daily report:
+Merges all generated statements or deposit slips chronologically into one PDF with 1 blank separator page between each daily report:
 ```cmd
+:: Merge Bank Statements:
 Run-FlashAutomator.bat -Mode Merge
+
+:: Merge Deposit Slips:
+Run-FlashAutomator.bat -Mode Merge -ReportType DepositSlip
 ```
 *(Requires Python on the system for PDF processing).*
 

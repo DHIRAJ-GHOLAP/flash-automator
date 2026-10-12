@@ -23,6 +23,7 @@ from app.pdf_export import (
     get_target_file_path,
     render_html_to_pdf,
     save_debug_html,
+    save_pdf_bytes,
     validate_pdf_data,
 )
 from app.report_parser import ReportParser, ReportValidationResult
@@ -78,10 +79,12 @@ class BatchRunner:
         Process a single date: fetch, validate, export PDF, and record audit status.
         """
         start_time = time.time()
+        prefix = self.config.filename_prefix
         target_path, already_exists = get_target_file_path(
             output_dir=self.config.output_dir,
             date_input=item.date,
             overwrite=self.config.overwrite,
+            prefix=prefix,
         )
 
         # Check resume condition
@@ -126,6 +129,45 @@ class BatchRunner:
                 error_message=str(e),
             )
 
+        # Deposit Slip workflow (Direct BIRT vector PDF)
+        if self.config.is_deposit_slip:
+            if resp.content.startswith(b"%PDF-"):
+                try:
+                    pdf_path = save_pdf_bytes(resp.content, target_path)
+                    is_valid, _, page_count = validate_pdf_data(resp.content)
+                    duration = time.time() - start_time
+                    logger.info(
+                        f"[{item.date_str}] Success! Generated {pdf_path.name} "
+                        f"({page_count} pages, {round(duration, 2)}s)"
+                    )
+                    return DateResult(
+                        date=item.date_str,
+                        status="SUCCESS",
+                        output_file=str(pdf_path),
+                        record_count=page_count,
+                        duration_seconds=round(duration, 2),
+                    )
+                except Exception as e:
+                    duration = time.time() - start_time
+                    logger.error(f"[{item.date_str}] PDF save error: {e}")
+                    return DateResult(
+                        date=item.date_str,
+                        status="ERROR",
+                        duration_seconds=round(duration, 2),
+                        error_message=f"Save failed: {e}",
+                    )
+            else:
+                duration = time.time() - start_time
+                error_text = resp.text[:200] if hasattr(resp, "text") else "Invalid response"
+                logger.error(f"[{item.date_str}] Expected PDF response but got: {error_text}")
+                return DateResult(
+                    date=item.date_str,
+                    status="ERROR",
+                    duration_seconds=round(duration, 2),
+                    error_message=f"Response does not contain valid PDF magic bytes: {error_text}",
+                )
+
+        # Bank Account Statement workflow (HTML table -> WeasyPrint PDF)
         # Save debug HTML if enabled
         if self.config.save_html:
             debug_file = save_debug_html(resp.text, self.config.debug_dir, item.date_str)

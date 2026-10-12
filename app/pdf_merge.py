@@ -19,11 +19,14 @@ except ImportError:
 
 logger = logging.getLogger("flash_automator.merge")
 
-DATE_PATTERN = re.compile(r"BankStatement_(\d{2})[-_](\d{2})[-_](\d{4})", re.IGNORECASE)
+DATE_PATTERN = re.compile(
+    r"(?:BankStatement|DepositSlip|\w+)[-_](\d{2})[-_](\d{2})[-_](\d{4})",
+    re.IGNORECASE,
+)
 
 
 def extract_date_from_filename(filename: str) -> Optional[datetime.date]:
-    """Extract datetime.date from a statement filename like BankStatement_10-07-2023.pdf."""
+    """Extract datetime.date from a statement filename like BankStatement_10-07-2023.pdf or DepositSlip_10-07-2023.pdf."""
     match = DATE_PATTERN.search(filename)
     if match:
         day, month, year = match.groups()
@@ -34,10 +37,14 @@ def extract_date_from_filename(filename: str) -> Optional[datetime.date]:
     return None
 
 
-def get_sorted_statement_pdfs(input_dir: Path | str) -> List[Path]:
+def get_sorted_statement_pdfs(
+    input_dir: Path | str,
+    prefix: Optional[str] = None,
+) -> List[Path]:
     """
-    Scan input_dir for BankStatement_*.pdf files and sort them chronologically by statement date.
+    Scan input_dir for statement/slip PDFs and sort them chronologically by report date.
     Files that do not match the date pattern are sorted alphabetically at the end.
+    Optionally filters by prefix (e.g. 'BankStatement' or 'DepositSlip').
     """
     directory = Path(input_dir)
     if not directory.exists() or not directory.is_dir():
@@ -46,6 +53,10 @@ def get_sorted_statement_pdfs(input_dir: Path | str) -> List[Path]:
     pdf_files = list(directory.glob("*.pdf"))
     # Exclude any previously generated merged PDFs
     pdf_files = [f for f in pdf_files if not f.name.startswith("Merged_") and "merged" not in f.name.lower()]
+
+    if prefix:
+        clean_prefix = prefix.strip().lower()
+        pdf_files = [f for f in pdf_files if f.name.lower().startswith(clean_prefix)]
 
     def sort_key(path: Path) -> Tuple[int, datetime.date, str]:
         extracted_date = extract_date_from_filename(path.name)

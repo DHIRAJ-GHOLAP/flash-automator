@@ -240,11 +240,20 @@ In addition to GUI macro recording, Flash Automator features a high-performance,
 Instead of unreliable mouse coordinate clicking, this engine communicates directly with the portal via authenticated HTTP requests, extracts the balance statement table, and renders pixel-perfect vector A4 landscape PDF statements.
 
 ### 🔍 Verified Portal Findings
+
+#### 1. Bank Account Wise Balance Statement (BAS)
 - **Report POST Endpoint:** `https://kdmc.gov.in/MainetService/AccountFinancialReport.html?report`
 - **Method:** `POST` (`application/x-www-form-urlencoded; charset=UTF-8`)
 - **Required Parameters:** `reportTypeCode=BAS`, `fromDate=DD/MM/YYYY`, `toDate=DD/MM/YYYY`, `accountHeadId=0`, `fieldId=4`
 - **Security:** Spring Security CSRF (`X-CSRF-TOKEN`) synchronized with `JSESSIONID` session cookies.
-- **Export Mechanism:** The application has no server-side PDF route; reports are returned as HTML containing `<div id="receipt">` and printed via JavaScript `PrintDiv('')`. Flash Automator converts this directly into faithful A4 landscape PDF reports (`BankStatement_DD-MM-YYYY.pdf`) using `WeasyPrint`.
+- **Export Mechanism:** The application returns HTML containing `<div id="receipt">` printed via JavaScript `PrintDiv('')`. Flash Automator converts this directly into faithful A4 landscape PDF reports (`BankStatement_DD-MM-YYYY.pdf`) using `WeasyPrint`.
+
+#### 2. Deposit Slip Detail Receipt Report (DepositSlip)
+- **Report BIRT Endpoint:** `https://kdmc.gov.in/birtPA/output`
+- **Method:** `GET`
+- **Required Parameters:** `__report=DepositSlip_ReceiptDetailReport.rptdesign`, `__format=pdf`, `ULBName=1`, `Ward=0`, `Bank=0`, `Mode=X`, `FromDate=DD/MM/YYYY`, `ToDate=DD/MM/YYYY`
+- **Security:** Authenticated HTTP request with `JSESSIONID` cookie and TLS 1.2.
+- **Export Mechanism:** Eclipse BIRT engine on the server natively generates and streams official vector PDF files (`DepositSlip_DD-MM-YYYY.pdf`).
 
 ### ⚙️ Setup & Configuration
 
@@ -259,20 +268,29 @@ Instead of unreliable mouse coordinate clicking, this engine communicates direct
 
 ### 🚀 CLI Usage
 
-#### 1. Single-Date Proof of Concept (Phase 3)
-Validate a single date and export `BankStatement_10-10-2026.pdf`:
+#### 1. Single-Date Proof of Concept
+Validate a single date:
 ```bash
-python -m flash_automator.cli test-date --date 10/10/2026
+# Bank Statement (BAS):
+python -m app.cli test-date --date 10/10/2026
+
+# Deposit Slip:
+python -m app.cli test-date --report-type deposit-slip --date 01/07/2023
 ```
 Options:
-- `--save-html`: Save raw server HTML to `./debug/` for diagnostic inspection.
+- `--report-type <type>`: `bas` (default) or `deposit-slip`.
+- `--save-html`: Save raw server HTML to `./debug/` for diagnostic inspection (BAS only).
 - `--output-dir <path>`: Specify custom PDF destination directory.
 - `--overwrite`: Re-download even if PDF already exists.
 
-#### 2. Sequential Batch Automation (Phase 6)
-Download a whole month of daily statements sequentially:
+#### 2. Sequential Batch Automation
+Download a whole month of daily statements or deposit slips sequentially:
 ```bash
-python -m flash_automator.cli batch --start 01/10/2026 --end 31/10/2026 --delay 1.5
+# Bank Account Statements:
+python -m app.cli batch --start 01/07/2023 --end 31/07/2023 --delay 1.5
+
+# Deposit Slips:
+python -m app.cli batch --report-type deposit-slip --start 01/07/2023 --end 31/07/2023 --delay 1.5
 ```
 Advanced Scheduling & Filtering:
 - `--weekdays-only`: Process Monday through Friday only.
@@ -286,19 +304,24 @@ Inspect the calculated dates and skip reasons before sending any network traffic
 python -m app.cli generate-dates --start 01/10/2026 --end 31/10/2026 --skip-sundays
 ```
 
-#### 4. Merge Statements into Single PDF (with Blank Separator Pages)
-Merge all generated daily statement PDFs into a single file in chronological date order, inserting **exactly one blank/empty page** between each statement for duplex printing / physical filing:
+#### 4. Merge Statements or Deposit Slips into Single PDF (with Blank Separator Pages)
+Merge all generated daily PDFs into a single file in chronological date order, inserting **exactly one blank/empty page** between each statement/slip for duplex printing / physical filing:
 ```bash
-python -m app.cli merge
+# Merge Bank Statements:
+python -m app.cli merge --prefix BankStatement
+
+# Merge Deposit Slips:
+python -m app.cli merge --prefix DepositSlip
 ```
 Options:
+- `--prefix <name>`: Filter by file prefix (`DepositSlip` or `BankStatement`).
 - `--input-dir <dir>`: Folder containing statement PDFs (default: `./output`).
-- `--output-file <file>`: Name or path for combined PDF (default: `Merged_BankStatements.pdf`).
+- `--output-file <file>`: Name or path for combined PDF (defaults to `Merged_DepositSlips.pdf` or `Merged_BankStatements.pdf`).
 - `--no-blank-page`: Disable insertion of blank separator pages between statements.
 
 Example:
 ```bash
-python -m app.cli merge --output-file Merged_July_2023.pdf
+python -m app.cli merge --prefix DepositSlip --output-file Merged_July_2023_DepositSlips.pdf
 ```
 
 ### 🛡️ Safety, Privacy, and Audit Logs

@@ -61,19 +61,23 @@ def format_date_for_filename(date_input: str | datetime.date) -> str:
     raise ValueError(f"Unrecognized date format for filename: {date_input}")
 
 
-def generate_filename(date_input: str | datetime.date) -> str:
+def generate_filename(
+    date_input: str | datetime.date,
+    prefix: str = "BankStatement",
+) -> str:
     """
     Generate standard filename according to project specification:
-    BankStatement_DD-MM-YYYY.pdf
+    [Prefix]_DD-MM-YYYY.pdf (e.g. BankStatement_10-10-2026.pdf or DepositSlip_10-10-2026.pdf)
     """
     formatted_date = format_date_for_filename(date_input)
-    return f"BankStatement_{formatted_date}.pdf"
+    return f"{prefix}_{formatted_date}.pdf"
 
 
 def get_target_file_path(
     output_dir: Path | str,
     date_input: str | datetime.date,
     overwrite: bool = False,
+    prefix: str = "BankStatement",
 ) -> Tuple[Path, bool]:
     """
     Determine target file path and verify duplicate protection.
@@ -81,7 +85,7 @@ def get_target_file_path(
     """
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    filename = generate_filename(date_input)
+    filename = generate_filename(date_input, prefix=prefix)
     target_path = out_dir / filename
 
     if target_path.exists():
@@ -89,6 +93,26 @@ def get_target_file_path(
             return target_path, True
 
     return target_path, False
+
+
+def save_pdf_bytes(
+    pdf_bytes: bytes,
+    output_path: Path | str,
+) -> Path:
+    """
+    Validate and save direct PDF bytes to destination output_path.
+    """
+    target = Path(output_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    is_valid, reason, _ = validate_pdf_data(pdf_bytes)
+    if not is_valid:
+        raise PDFValidationError(f"Received PDF failed validation: {reason}")
+
+    with open(target, "wb") as f:
+        f.write(pdf_bytes)
+
+    return target
 
 
 def validate_pdf_data(pdf_bytes: bytes) -> Tuple[bool, str, int]:

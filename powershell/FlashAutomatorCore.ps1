@@ -571,3 +571,81 @@ function Get-DateSequence {
     }
     return $list
 }
+
+function Download-DepositSlipPdf {
+    param (
+        [string]$TargetDateStr,
+        [string]$DestinationPath,
+        [string]$SessionCookie = "",
+        [string]$BirtUrl = "https://kdmc.gov.in/birtPA/output",
+        [int]$UlbName = 1,
+        [int]$Ward = 0,
+        [int]$Bank = 0,
+        [string]$Mode = "X"
+    )
+
+    $url = "$BirtUrl`?__report=DepositSlip_ReceiptDetailReport.rptdesign&__format=pdf&ULBName=$UlbName&Ward=$Ward&Bank=$Bank&Mode=$Mode&FromDate=$TargetDateStr&ToDate=$TargetDateStr"
+    Log-Info "[$TargetDateStr] Fetching Deposit Slip from BIRT server..."
+
+    $request = [System.Net.HttpWebRequest]::Create($url)
+    $request.Method = "GET"
+    $request.Timeout = 60000
+    $request.ReadWriteTimeout = 60000
+    $request.UserAgent = "Mozilla/5.0 (Windows NT 6.1; Win64; x64) Chrome/109.0.0.0"
+    $request.Referer = "https://kdmc.gov.in/MainetService/AdminHome.html"
+
+    $cookieJar = New-Object System.Net.CookieContainer
+    if ($SessionCookie) {
+        $request.Headers.Add("Cookie", "JSESSIONID=$SessionCookie")
+        try {
+            $c = New-Object System.Net.Cookie("JSESSIONID", $SessionCookie, "/", "kdmc.gov.in")
+            $cookieJar.Add($c)
+        } catch {}
+    }
+    $request.CookieContainer = $cookieJar
+
+    $response = $null
+    try {
+        $response = $request.GetResponse()
+    } catch [System.Net.WebException] {
+        $webEx = $_.Exception
+        if ($webEx.Response) {
+            $response = $webEx.Response
+        } else {
+            throw $webEx
+        }
+    }
+
+    $statusCode = [int]$response.StatusCode
+    if ($statusCode -ne 200) {
+        $response.Close()
+        throw "Server returned HTTP status $statusCode"
+    }
+
+    $respStream = $response.GetResponseStream()
+    $fileStream = [System.IO.File]::Create($DestinationPath)
+    $buffer = New-Object byte[] 8192
+    $totalBytes = 0
+    while (($bytesRead = $respStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+        $fileStream.Write($buffer, 0, $bytesRead)
+        $totalBytes += $bytesRead
+    }
+    $fileStream.Close()
+    $respStream.Close()
+    $response.Close()
+
+    # Validate PDF signature
+    if ($totalBytes -lt 1024) {
+        Remove-Item $DestinationPath -Force -ErrorAction SilentlyContinue
+        throw "Downloaded PDF is smaller than 1024 bytes ($totalBytes bytes)."
+    }
+
+    $magicBytes = [System.IO.File]::ReadAllBytes($DestinationPath)
+    $magicStr = [System.Text.Encoding]::ASCII.GetString($magicBytes, 0, [Math]::Min(10, $magicBytes.Length))
+    if (-not $magicStr.StartsWith("%PDF-")) {
+        Remove-Item $DestinationPath -Force -ErrorAction SilentlyContinue
+        throw "Server response is not a valid PDF (Header: $magicStr)."
+    }
+
+    return $totalBytes
+}

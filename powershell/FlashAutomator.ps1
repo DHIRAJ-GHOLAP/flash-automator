@@ -26,9 +26,11 @@
 
 [CmdletBinding()]
 param (
-    [Parameter(Position = 0)]
     [ValidateSet("TestDate", "Batch", "GenerateDates", "Merge", "Help")]
     [string]$Mode = "Help",
+
+    [ValidateSet("BAS", "DepositSlip")]
+    [string]$ReportType = "BAS",
 
     [Parameter(ValueFromPipelineByPropertyName = $true)]
     [string]$Date = "",
@@ -89,8 +91,9 @@ function Execute-SingleDateWorkflow {
         New-Item -ItemType Directory -Path $outDirPath -Force | Out-Null
     }
 
-    $htmlTarget = Join-Path $outDirPath "BankStatement_$cleanDate.html"
-    $pdfTarget = Join-Path $outDirPath "BankStatement_$cleanDate.pdf"
+    $prefix = if ($ReportType -eq "DepositSlip") { "DepositSlip" } else { "BankStatement" }
+    $htmlTarget = Join-Path $outDirPath "$($prefix)_$cleanDate.html"
+    $pdfTarget = Join-Path $outDirPath "$($prefix)_$cleanDate.pdf"
 
     # Check resume state
     if ((-not $NoResume) -and (-not $Overwrite)) {
@@ -108,6 +111,28 @@ function Execute-SingleDateWorkflow {
         }
     }
 
+    # Deposit Slip Workflow (Direct BIRT vector PDF)
+    if ($ReportType -eq "DepositSlip") {
+        try {
+            $bytesDownloaded = Download-DepositSlipPdf -TargetDateStr $TargetDateStr -DestinationPath $pdfTarget -SessionCookie $script:SessionCookie
+            Log-Success "[$TargetDateStr] Generated Deposit Slip PDF: $([System.IO.Path]::GetFileName($pdfTarget)) ($bytesDownloaded bytes)"
+            $resObj = New-Object PSObject
+            $resObj | Add-Member -MemberType NoteProperty -Name "Date" -Value $TargetDateStr
+            $resObj | Add-Member -MemberType NoteProperty -Name "Status" -Value "SUCCESS"
+            $resObj | Add-Member -MemberType NoteProperty -Name "File" -Value $pdfTarget
+            $resObj | Add-Member -MemberType NoteProperty -Name "Records" -Value 1
+            return $resObj
+        } catch {
+            Log-ErrorMsg "[$TargetDateStr] Deposit Slip download failed: $_"
+            $resObj = New-Object PSObject
+            $resObj | Add-Member -MemberType NoteProperty -Name "Date" -Value $TargetDateStr
+            $resObj | Add-Member -MemberType NoteProperty -Name "Status" -Value "ERROR"
+            $resObj | Add-Member -MemberType NoteProperty -Name "Error" -Value "$_"
+            return $resObj
+        }
+    }
+
+    # Bank Account Statement Workflow (HTML form POST -> receipt -> PDF)
     # Ensure CSRF token
     if (-not $script:CsrfToken) {
         $script:CsrfToken = Refresh-CsrfToken -BaseUrl $BaseUrl -SessionCookie $script:SessionCookie -CurrentToken $script:CsrfToken
@@ -202,8 +227,8 @@ switch ($Mode) {
         }
 
         $res = Execute-SingleDateWorkflow -TargetDateStr $Date
-        if ($res.Status -eq "SUCCESS") {
-            Log-Success "Single-date proof of concept completed successfully!"
+        if ($res.Status -eq "SUCCESS" -or $res.Status -eq "SKIPPED") {
+            Log-Success "Single-date test finished successfully (Status: $($res.Status))!"
             exit 0
         } else {
             Log-ErrorMsg "Single-date test ended with status: $($res.Status)"
@@ -302,6 +327,12 @@ switch ($Mode) {
 
         if ($pyCmd) {
             $mergeArgs = @("-m", "app.cli", "merge", "--input-dir", $OutputDir)
+            if ($ReportType -eq "DepositSlip") {
+                $mergeArgs += @("--prefix", "DepositSlip")
+                if (-not $OutputFile -or $OutputFile -eq "Merged_BankStatements.pdf") {
+                    $OutputFile = "Merged_DepositSlips.pdf"
+                }
+            }
             if ($OutputFile) {
                 $mergeArgs += @("--output-file", $OutputFile)
             }
@@ -324,9 +355,11 @@ Flash Automator (PowerShell Engine for Windows 7 / 10 / 11)
 Commands:
   1. Single-Date Proof of Concept:
      .\FlashAutomator.ps1 -Mode TestDate -Date "10/10/2026"
+     .\FlashAutomator.ps1 -Mode TestDate -ReportType DepositSlip -Date "01/07/2023"
 
   2. Sequential Month Batch Automation:
      .\FlashAutomator.ps1 -Mode Batch -StartDate "01/10/2026" -EndDate "31/10/2026"
+     .\FlashAutomator.ps1 -Mode Batch -ReportType DepositSlip -StartDate "01/07/2023" -EndDate "31/07/2023"
 
   3. Batch Skipping Sundays:
      .\FlashAutomator.ps1 -Mode Batch -StartDate "01/10/2026" -EndDate "31/10/2026" -SkipSundays
@@ -336,16 +369,17 @@ Commands:
 
   5. Merge Generated PDFs with 1 Blank Page Separator:
      .\FlashAutomator.ps1 -Mode Merge
-     .\FlashAutomator.ps1 -Mode Merge -OutputFile "Merged_July_2023.pdf"
+     .\FlashAutomator.ps1 -Mode Merge -ReportType DepositSlip
 
 Parameters:
-  -DelaySeconds <float>   Pause between requests in seconds (default: 1.5)
-  -OutputDir <path>       Destination folder for statements (default: ./output)
-  -OutputFile <string>    Filename for merged PDF (default: Merged_BankStatements.pdf)
-  -NoBlankPage            Disable insertion of blank separator pages between statements
-  -SaveHtml               Save raw server HTML for debugging
-  -Overwrite              Re-download statements even if file exists
-  -SkipCertificateCheck   Bypass SSL certificate checks on legacy Windows 7
+  -ReportType <BAS|DepositSlip> Type of report to generate (default: BAS)
+  -DelaySeconds <float>         Pause between requests in seconds (default: 1.5)
+  -OutputDir <path>             Destination folder for statements (default: ./output)
+  -OutputFile <string>          Filename for merged PDF (default: Merged_BankStatements.pdf)
+  -NoBlankPage                  Disable insertion of blank separator pages between statements
+  -SaveHtml                     Save raw server HTML for debugging (BAS only)
+  -Overwrite                    Re-download statements even if file exists
+  -SkipCertificateCheck         Bypass SSL certificate checks on legacy Windows 7
 "@ -ForegroundColor Yellow
         exit 0
     }

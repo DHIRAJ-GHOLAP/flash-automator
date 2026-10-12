@@ -21,6 +21,8 @@ from app.pdf_export import (
     get_target_file_path,
     render_html_to_pdf,
     save_debug_html,
+    save_pdf_bytes,
+    validate_pdf_data,
 )
 from app.report_parser import ReportParser
 
@@ -40,6 +42,8 @@ def cmd_test_date(args: argparse.Namespace, config: AppConfig) -> int:
         return 1
 
     # Override config options from CLI flags if given
+    if getattr(args, "report_type", None):
+        config.report_type_code = args.report_type
     if args.output_dir:
         config.output_dir = Path(args.output_dir)
     if args.save_html:
@@ -61,16 +65,18 @@ def cmd_test_date(args: argparse.Namespace, config: AppConfig) -> int:
 
     client = KDMCClient(config=config, session_manager=session_mgr)
 
-    # 1. Acquire / verify CSRF token
-    if not session_mgr.csrf_token:
+    # 1. Acquire / verify CSRF token (only needed for MainetService BAS forms)
+    if not config.is_deposit_slip and not session_mgr.csrf_token:
         logger.info("Attempting to acquire CSRF token from portal...")
         client.refresh_csrf_token()
 
     # 2. Check target output path and duplicate protection
+    prefix = config.filename_prefix
     target_path, already_exists = get_target_file_path(
         output_dir=config.output_dir,
         date_input=parsed_date,
         overwrite=config.overwrite,
+        prefix=prefix,
     )
     if already_exists and not config.overwrite:
         logger.warning(
@@ -81,7 +87,8 @@ def cmd_test_date(args: argparse.Namespace, config: AppConfig) -> int:
 
     # 3. Submit request
     try:
-        logger.info(f"Submitting verified report POST request for date {date_str}...")
+        report_label = "Deposit Slip PDF" if config.is_deposit_slip else "Bank Statement POST"
+        logger.info(f"Submitting {report_label} request for date {date_str}...")
         resp = client.fetch_report(date_str)
     except SessionExpiredError as e:
         logger.error(f"Session Authentication Failed: {e}")
@@ -92,12 +99,29 @@ def cmd_test_date(args: argparse.Namespace, config: AppConfig) -> int:
 
     logger.info(f"HTTP Status: {resp.status_code} ({len(resp.content)} bytes received)")
 
-    # 4. Save debug HTML if enabled
+    # 4. Deposit Slip workflow (Direct BIRT vector PDF)
+    if config.is_deposit_slip:
+        if resp.content.startswith(b"%PDF-"):
+            try:
+                pdf_path = save_pdf_bytes(resp.content, target_path)
+                is_valid, reason, page_count = validate_pdf_data(resp.content)
+                logger.info(f"Successfully generated Deposit Slip PDF: {pdf_path}")
+                logger.info(f"Pages: {page_count} | Size: {pdf_path.stat().st_size:,} bytes | Destination: {pdf_path.resolve()}")
+                logger.info("--- Single-date test completed successfully ---")
+                return 0
+            except Exception as e:
+                logger.error(f"Deposit Slip Save Error: {e}")
+                return 1
+        else:
+            logger.error(f"Expected PDF response but received non-PDF payload: {resp.text[:300]}")
+            return 1
+
+    # 5. Bank Account Statement workflow (HTML table -> WeasyPrint PDF)
     if config.save_html:
         saved_debug = save_debug_html(resp.text, config.debug_dir, date_str)
         logger.info(f"Saved raw response HTML to: {saved_debug}")
 
-    # 5. Validate response structure
+    # Validate response structure
     val_res = ReportParser.validate_response(resp.text)
     if not val_res.is_valid:
         logger.error(f"Response Validation Failed: {val_res.error_message}")
@@ -115,7 +139,7 @@ def cmd_test_date(args: argparse.Namespace, config: AppConfig) -> int:
         f"with {val_res.record_count} account balance rows."
     )
 
-    # 6. Extract clean HTML and generate PDF
+    # Extract clean HTML and generate PDF
     try:
         clean_html = ReportParser.extract_clean_printable_html(resp.text)
         pdf_path = render_html_to_pdf(clean_html, target_path)
@@ -131,7 +155,11 @@ def cmd_test_date(args: argparse.Namespace, config: AppConfig) -> int:
 
 def cmd_batch(args: argparse.Namespace, config: AppConfig) -> int:
     """Execute Phase 6: Sequential Batch Runner."""
-    logger.info(f"--- Running Batch Statement Automation from {args.start} to {args.end} ---")
+    if getattr(args, "report_type", None):
+        config.report_type_code = args.report_type
+
+    report_desc = "Deposit Slips" if config.is_deposit_slip else "Bank Statements"
+    logger.info(f"--- Running Batch {report_desc} Automation from {args.start} to {args.end} ---")
 
     # Override config options
     if args.output_dir:
@@ -171,6 +199,9 @@ def cmd_batch(args: argparse.Namespace, config: AppConfig) -> int:
         csrf_token=config.csrf_token,
     )
     client = KDMCClient(config=config, session_manager=session_mgr)
+
+    if not config.is_deposit_slip and not session_mgr.csrf_token:
+        client.refresh_csrf_token()
 
     runner = BatchRunner(
         client=client,
@@ -241,18 +272,21 @@ from app.pdf_merge import get_sorted_statement_pdfs, merge_statement_pdfs
 
 
 def cmd_merge(args: argparse.Namespace, config: AppConfig) -> int:
-    """Merge all generated statement PDFs with one empty page in between."""
+    """Merge all generated statement/slip PDFs with one empty page in between."""
     input_dir = Path(args.input_dir) if args.input_dir else config.output_dir
-    logger.info(f"--- Merging Bank Statement PDFs from {input_dir} ---")
+    prefix = getattr(args, "prefix", None)
+
+    logger.info(f"--- Merging PDF Reports from {input_dir} (Prefix: {prefix or 'Auto'}) ---")
 
     try:
-        pdf_files = get_sorted_statement_pdfs(input_dir)
+        pdf_files = get_sorted_statement_pdfs(input_dir, prefix=prefix)
     except FileNotFoundError as e:
         logger.error(str(e))
         return 1
 
     if not pdf_files:
-        logger.error(f"No statement PDF files found in directory: {input_dir}")
+        filter_msg = f" matching prefix '{prefix}'" if prefix else ""
+        logger.error(f"No statement PDF files found in directory{filter_msg}: {input_dir}")
         return 1
 
     logger.info(f"Found {len(pdf_files)} PDF statements to merge in chronological order:")
@@ -264,7 +298,11 @@ def cmd_merge(args: argparse.Namespace, config: AppConfig) -> int:
         if not out_path.is_absolute() and not str(out_path).startswith((".", "/")):
             out_path = input_dir / out_path
     else:
-        out_path = input_dir / "Merged_BankStatements.pdf"
+        first_name = pdf_files[0].name.lower()
+        if (prefix and "deposit" in prefix.lower()) or "depositslip" in first_name:
+            out_path = input_dir / "Merged_DepositSlips.pdf"
+        else:
+            out_path = input_dir / "Merged_BankStatements.pdf"
 
     insert_blank = not args.no_blank_page
     logger.info(
@@ -317,6 +355,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Date to generate statement for (e.g. 10/10/2026)",
     )
     p_test.add_argument(
+        "--report-type",
+        type=str,
+        default=None,
+        help="Report type code: 'bas' (Bank Account Statement) or 'deposit-slip' (Deposit Slip Report)",
+    )
+    p_test.add_argument(
         "--save-html",
         action="store_true",
         help="Save raw response HTML to debug directory",
@@ -346,6 +390,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         required=True,
         help="End date in DD/MM/YYYY format (e.g. 31/10/2026)",
+    )
+    p_batch.add_argument(
+        "--report-type",
+        type=str,
+        default=None,
+        help="Report type code: 'bas' (Bank Account Statement) or 'deposit-slip' (Deposit Slip Report)",
     )
     p_batch.add_argument(
         "--weekdays-only",
@@ -447,7 +497,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-file",
         type=str,
         default=None,
-        help="Destination merged PDF filename or path (default: Merged_BankStatements.pdf)",
+        help="Destination merged PDF filename or path (default: Merged_BankStatements.pdf or Merged_DepositSlips.pdf)",
+    )
+    p_merge.add_argument(
+        "--prefix",
+        type=str,
+        default=None,
+        help="Filter statements by filename prefix (e.g. 'DepositSlip' or 'BankStatement')",
     )
     p_merge.add_argument(
         "--no-blank-page",
