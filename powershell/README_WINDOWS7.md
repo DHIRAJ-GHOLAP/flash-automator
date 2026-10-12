@@ -85,6 +85,20 @@ Run-FlashAutomator.bat -Mode Merge -ReportType PaymentSlip
 ```
 *(Requires Python on the system for PDF processing).*
 
+#### 5. Assemble Final Cashbook {Month/Year} (Duplex Print Ready)
+Compiles the comprehensive municipal Cashbook for the month. For each day, it orders **Bank Report -> Deposit Slip -> Payment Slip**, inserting exactly **1 empty page between all documents**:
+```cmd
+:: Auto-detect month from downloaded files:
+Run-FlashAutomator.bat -Mode Cashbook
+
+:: Specify period (MM/YYYY):
+Run-FlashAutomator.bat -Mode Cashbook -Period "07/2023"
+
+:: Or specify Month and Year:
+Run-FlashAutomator.bat -Mode Cashbook -Month 7 -Year 2023
+```
+Output: `output/Final_Cashbook_July_2023.pdf` *(Ready for duplex printing and physical municipal audit binder)*.
+
 ---
 
 ## 📁 Output & Printing on Windows 7

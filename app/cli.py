@@ -289,7 +289,13 @@ def cmd_generate_dates(args: argparse.Namespace) -> int:
         print(f"{i:<4} {item.date_str:<12} {item.weekday_name:<11} {status:<10} {reason}")
 
     print("-" * 65)
-from app.pdf_merge import get_sorted_statement_pdfs, merge_statement_pdfs
+from app.pdf_merge import (
+    MONTH_NAMES,
+    generate_final_cashbook,
+    get_sorted_statement_pdfs,
+    merge_statement_pdfs,
+    parse_period_string,
+)
 
 
 def cmd_merge(args: argparse.Namespace, config: AppConfig) -> int:
@@ -346,6 +352,61 @@ def cmd_merge(args: argparse.Namespace, config: AppConfig) -> int:
         return 0
     except Exception as e:
         logger.error(f"Failed to merge PDFs: {e}")
+        return 1
+
+
+def cmd_cashbook(args: argparse.Namespace, config: AppConfig) -> int:
+    """Generate Final Cashbook PDF by assembling daily Bank Statements, Deposit Slips, and Payment Slips in order with 1 blank page in between."""
+    input_dir = Path(args.input_dir) if args.input_dir else config.output_dir
+    month = None
+    year = None
+
+    if getattr(args, "period", None):
+        try:
+            month, year = parse_period_string(args.period)
+        except ValueError as e:
+            logger.error(str(e))
+            return 1
+    else:
+        if getattr(args, "month", None):
+            raw_month = str(args.month).strip()
+            if raw_month.isdigit():
+                month = int(raw_month)
+            elif raw_month.lower() in MONTH_NAMES:
+                month = MONTH_NAMES[raw_month.lower()]
+            else:
+                logger.error(f"Invalid month argument: '{args.month}'")
+                return 1
+        if getattr(args, "year", None):
+            try:
+                year = int(args.year)
+            except ValueError:
+                logger.error(f"Invalid year argument: '{args.year}'")
+                return 1
+
+    insert_blank = not args.no_blank_page
+    period_label = f"{month:02d}/{year}" if month and year else "Auto-detect"
+    logger.info(f"--- Generating Final Cashbook from {input_dir} (Period: {period_label}) ---")
+    logger.info(
+        f"Blank separator page between PDFs: "
+        f"{'ENABLED (1 blank page between all reports)' if insert_blank else 'DISABLED'}"
+    )
+
+    try:
+        final_path, count, total_pages = generate_final_cashbook(
+            input_dir=input_dir,
+            output_path=args.output_file,
+            month=month,
+            year=year,
+            insert_blank_page=insert_blank,
+        )
+        logger.info(f"Successfully generated Final Cashbook: {final_path}")
+        logger.info(f"Total Daily Reports Merged: {count}")
+        logger.info(f"Total Pages in Cashbook:    {total_pages}")
+        logger.info(f"Cashbook File Size:         {final_path.stat().st_size:,} bytes")
+        return 0
+    except Exception as e:
+        logger.error(f"Failed to generate Final Cashbook: {e}")
         return 1
 
 
@@ -544,6 +605,47 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not insert a blank separator page between statements",
     )
 
+    # Subcommand: cashbook
+    p_cash = subparsers.add_parser(
+        "cashbook",
+        help="Assemble Final Cashbook (Bank Report -> Deposit Slip -> Payment Slip per day with 1 blank page in between)",
+    )
+    p_cash.add_argument(
+        "--period",
+        type=str,
+        default=None,
+        help="Month and year period (e.g. '07/2023', 'July 2023', or '07-2023')",
+    )
+    p_cash.add_argument(
+        "--month",
+        type=str,
+        default=None,
+        help="Month number (1-12) or name (e.g. '7' or 'July')",
+    )
+    p_cash.add_argument(
+        "--year",
+        type=int,
+        default=None,
+        help="Four-digit year (e.g. 2023)",
+    )
+    p_cash.add_argument(
+        "--input-dir",
+        type=str,
+        default=None,
+        help="Directory containing statement PDFs (default: ./output)",
+    )
+    p_cash.add_argument(
+        "--output-file",
+        type=str,
+        default=None,
+        help="Destination merged PDF filename or path (default: Final_Cashbook_{Month}_{Year}.pdf)",
+    )
+    p_cash.add_argument(
+        "--no-blank-page",
+        action="store_true",
+        help="Do not insert a blank separator page between reports",
+    )
+
     return parser
 
 
@@ -570,6 +672,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return cmd_batch(args, config)
     elif args.subcommand == "merge":
         return cmd_merge(args, config)
+    elif args.subcommand == "cashbook":
+        return cmd_cashbook(args, config)
 
     return 0
 

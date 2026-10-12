@@ -26,7 +26,7 @@
 
 [CmdletBinding()]
 param (
-    [ValidateSet("TestDate", "Batch", "GenerateDates", "Merge", "Help")]
+    [ValidateSet("TestDate", "Batch", "GenerateDates", "Merge", "Cashbook", "Help")]
     [string]$Mode = "Help",
 
     [ValidateSet("BAS", "DepositSlip", "PaymentSlip")]
@@ -37,6 +37,10 @@ param (
 
     [string]$StartDate = "",
     [string]$EndDate = "",
+
+    [string]$Period = "",
+    [string]$Month = "",
+    [string]$Year = "",
 
     [string]$SessionCookie = "",
     [string]$CsrfToken = "",
@@ -381,6 +385,41 @@ switch ($Mode) {
         }
     }
 
+    "Cashbook" {
+        Log-Info "--- Running Final Cashbook Assembly Workflow ---"
+        $pyCmd = $null
+        if (Get-Command "python3" -ErrorAction SilentlyContinue) {
+            $pyCmd = "python3"
+        } elseif (Get-Command "python" -ErrorAction SilentlyContinue) {
+            $pyCmd = "python"
+        }
+
+        if ($pyCmd) {
+            $cashArgs = @("-m", "app.cli", "cashbook", "--input-dir", $OutputDir)
+            if ($Period) {
+                $cashArgs += @("--period", $Period)
+            }
+            if ($Month) {
+                $cashArgs += @("--month", $Month)
+            }
+            if ($Year) {
+                $cashArgs += @("--year", $Year)
+            }
+            if ($OutputFile -and $OutputFile -ne "Merged_BankStatements.pdf") {
+                $cashArgs += @("--output-file", $OutputFile)
+            }
+            if ($NoBlankPage) {
+                $cashArgs += "--no-blank-page"
+            }
+            Log-Info "Delegating Final Cashbook compilation to $pyCmd with blank separator page insertion..."
+            & $pyCmd $cashArgs
+            exit $LASTEXITCODE
+        } else {
+            Log-ErrorMsg "Python runtime with 'pypdf' installed is required for PDF manipulation. Run: python -m app.cli cashbook"
+            exit 1
+        }
+    }
+
     Default {
         Write-Host @"
 Flash Automator (PowerShell Engine for Windows 7 / 10 / 11)
@@ -407,13 +446,18 @@ Commands:
      .\FlashAutomator.ps1 -Mode Merge -ReportType DepositSlip
      .\FlashAutomator.ps1 -Mode Merge -ReportType PaymentSlip
 
+  6. Assemble Final Cashbook (Bank Report -> Deposit -> Payment with 1 Blank Page):
+     .\FlashAutomator.ps1 -Mode Cashbook -Period "07/2023"
+     .\FlashAutomator.ps1 -Mode Cashbook -Month 7 -Year 2023
+
 Parameters:
   -ReportType <BAS|DepositSlip|PaymentSlip> Type of report to generate (default: BAS)
+  -Period <MM/YYYY>             Month and year for Cashbook (e.g. 07/2023)
   -AllPages                     Download all pages instead of only the last summary page for slips
   -DelaySeconds <float>         Pause between requests in seconds (default: 1.5)
   -OutputDir <path>             Destination folder for statements (default: ./output)
-  -OutputFile <string>          Filename for merged PDF (default: Merged_BankStatements.pdf)
-  -NoBlankPage                  Disable insertion of blank separator pages between statements
+  -OutputFile <string>          Filename for merged PDF
+  -NoBlankPage                  Disable insertion of blank separator pages
   -SaveHtml                     Save raw server HTML for debugging (BAS only)
   -Overwrite                    Re-download statements even if file exists
   -SkipCertificateCheck         Bypass SSL certificate checks on legacy Windows 7
