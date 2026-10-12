@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from app.auth import SessionExpiredError, SessionManager
-from app.batch_runner import BatchRunner
+from app.batch_runner import BatchRunner, CashbookRunner
 from app.client import KDMCClient
 from app.config import AppConfig, load_config
 from app.date_engine import HTTPDateEngine, parse_date_string
@@ -356,8 +356,19 @@ def cmd_merge(args: argparse.Namespace, config: AppConfig) -> int:
 
 
 def cmd_cashbook(args: argparse.Namespace, config: AppConfig) -> int:
-    """Generate Final Cashbook PDF by assembling daily Bank Statements, Deposit Slips, and Payment Slips in order with 1 blank page in between."""
-    input_dir = Path(args.input_dir) if args.input_dir else config.output_dir
+    """Generate Final Cashbook PDF by downloading missing reports and assembling them with 1 blank page in between."""
+    import calendar
+
+    # Output directory
+    target_dir = getattr(args, "output_dir", None) or getattr(args, "input_dir", None)
+    if target_dir:
+        config.output_dir = Path(target_dir)
+
+    if getattr(args, "delay", None) is not None:
+        config.request_delay = float(args.delay)
+    if getattr(args, "overwrite", False):
+        config.overwrite = True
+
     month = None
     year = None
 
@@ -384,29 +395,85 @@ def cmd_cashbook(args: argparse.Namespace, config: AppConfig) -> int:
                 logger.error(f"Invalid year argument: '{args.year}'")
                 return 1
 
-    insert_blank = not args.no_blank_page
-    period_label = f"{month:02d}/{year}" if month and year else "Auto-detect"
-    logger.info(f"--- Generating Final Cashbook from {input_dir} (Period: {period_label}) ---")
-    logger.info(
-        f"Blank separator page between PDFs: "
-        f"{'ENABLED (1 blank page between all reports)' if insert_blank else 'DISABLED'}"
+    insert_blank = not getattr(args, "no_blank_page", False)
+    skip_download = getattr(args, "skip_download", False)
+
+    # If period/month/year not specified but skip_download requested, allow auto-detection from existing files
+    if month is None or year is None:
+        if skip_download:
+            try:
+                final_path, count, total_pages = generate_final_cashbook(
+                    input_dir=config.output_dir,
+                    output_path=args.output_file,
+                    month=month,
+                    year=year,
+                    insert_blank_page=insert_blank,
+                )
+                logger.info(f"Successfully generated Final Cashbook: {final_path}")
+                logger.info(f"Total Daily Reports Merged: {count}")
+                logger.info(f"Total Pages in Cashbook:    {total_pages}")
+                logger.info(f"Cashbook File Size:         {final_path.stat().st_size:,} bytes")
+                return 0
+            except Exception as e:
+                logger.error(f"Failed to generate Final Cashbook: {e}")
+                return 1
+        else:
+            logger.error("Please specify --period (e.g. '07/2023') or both --month and --year.")
+            return 1
+
+    # Date range for the entire month
+    last_day = calendar.monthrange(year, month)[1]
+    start_date = f"01/{month:02d}/{year}"
+    end_date = f"{last_day:02d}/{month:02d}/{year}"
+
+    # Exclusions
+    excluded_dates = []
+    if getattr(args, "exclude_dates", None):
+        excluded_dates = [d.strip() for d in args.exclude_dates.split(",") if d.strip()]
+
+    excluded_weekdays = set()
+    if getattr(args, "skip_sundays", False):
+        excluded_weekdays.add(6)
+    if getattr(args, "skip_saturdays", False):
+        excluded_weekdays.add(5)
+
+    try:
+        date_engine = HTTPDateEngine(
+            start_date=start_date,
+            end_date=end_date,
+            weekdays_only=getattr(args, "weekdays_only", False),
+            exclude_weekdays=sorted(list(excluded_weekdays)) if excluded_weekdays else None,
+            exclude_dates=excluded_dates if excluded_dates else None,
+        )
+    except ValueError as e:
+        logger.error(f"Invalid date range or parameters: {e}")
+        return 1
+
+    session_mgr = SessionManager(
+        session_cookie=config.session_cookie,
+        csrf_token=config.csrf_token,
+    )
+    client = KDMCClient(config=config, session_manager=session_mgr)
+
+    runner = CashbookRunner(
+        client=client,
+        config=config,
+        month=month,
+        year=year,
+        date_engine=date_engine,
+        resume=not getattr(args, "overwrite", False),
+        skip_download=skip_download,
+        insert_blank_page=insert_blank,
+        output_file=args.output_file,
     )
 
     try:
-        final_path, count, total_pages = generate_final_cashbook(
-            input_dir=input_dir,
-            output_path=args.output_file,
-            month=month,
-            year=year,
-            insert_blank_page=insert_blank,
-        )
-        logger.info(f"Successfully generated Final Cashbook: {final_path}")
-        logger.info(f"Total Daily Reports Merged: {count}")
-        logger.info(f"Total Pages in Cashbook:    {total_pages}")
-        logger.info(f"Cashbook File Size:         {final_path.stat().st_size:,} bytes")
-        return 0
+        final_path, count, total_pages = runner.run()
+        if final_path:
+            return 0
+        return 1
     except Exception as e:
-        logger.error(f"Failed to generate Final Cashbook: {e}")
+        logger.error(f"Cashbook generation failed: {e}")
         return 1
 
 
@@ -635,10 +702,53 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory containing statement PDFs (default: ./output)",
     )
     p_cash.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Directory to save generated PDFs (default: ./output)",
+    )
+    p_cash.add_argument(
         "--output-file",
         type=str,
         default=None,
         help="Destination merged PDF filename or path (default: Final_Cashbook_{Month}_{Year}.pdf)",
+    )
+    p_cash.add_argument(
+        "--skip-download",
+        action="store_true",
+        help="Skip downloading and compile immediately from existing output files",
+    )
+    p_cash.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite and re-download existing files instead of resuming",
+    )
+    p_cash.add_argument(
+        "--delay",
+        type=float,
+        default=None,
+        help="Polite pause delay between requests in seconds (default: 1.5)",
+    )
+    p_cash.add_argument(
+        "--weekdays-only",
+        action="store_true",
+        help="Skip Saturdays and Sundays",
+    )
+    p_cash.add_argument(
+        "--skip-sundays",
+        action="store_true",
+        help="Skip Sundays",
+    )
+    p_cash.add_argument(
+        "--skip-saturdays",
+        action="store_true",
+        help="Skip Saturdays",
+    )
+    p_cash.add_argument(
+        "--exclude-dates",
+        type=str,
+        default=None,
+        help="Comma-separated dates to exclude (e.g. 15/07/2023,24/07/2023)",
     )
     p_cash.add_argument(
         "--no-blank-page",

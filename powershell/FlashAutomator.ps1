@@ -411,6 +411,24 @@ switch ($Mode) {
             if ($NoBlankPage) {
                 $cashArgs += "--no-blank-page"
             }
+            if ($Overwrite) {
+                $cashArgs += "--overwrite"
+            }
+            if ($DelaySeconds) {
+                $cashArgs += @("--delay", $DelaySeconds)
+            }
+            if ($WeekdaysOnly) {
+                $cashArgs += "--weekdays-only"
+            }
+            if ($SkipSundays) {
+                $cashArgs += "--skip-sundays"
+            }
+            if ($SkipSaturdays) {
+                $cashArgs += "--skip-saturdays"
+            }
+            if ($ExcludeDates -and $ExcludeDates.Count -gt 0) {
+                $cashArgs += @("--exclude-dates", ($ExcludeDates -join ","))
+            }
             Log-Info "Delegating Final Cashbook compilation to $pyCmd with blank separator page insertion..."
             & $pyCmd $cashArgs
             exit $LASTEXITCODE

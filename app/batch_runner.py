@@ -12,7 +12,7 @@ import signal
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
 from app.auth import SessionExpiredError
 from app.client import KDMCClient
@@ -293,3 +293,213 @@ class BatchRunner:
             json.dump(data, f, indent=2)
         logger.info(f"Execution manifest saved to: {manifest_file}")
         return manifest_file
+
+
+class CashbookRunner:
+    """
+    Orchestrates downloading all 3 municipal reports (Bank Statement, Deposit Slip,
+    and Payment Slip) for every day of a calendar month, and compiles them into a
+    unified Final Cashbook with 1 blank separator page between each document.
+    """
+
+    def __init__(
+        self,
+        client: KDMCClient,
+        config: AppConfig,
+        month: int,
+        year: int,
+        date_engine: Optional[HTTPDateEngine] = None,
+        resume: bool = True,
+        skip_download: bool = False,
+        insert_blank_page: bool = True,
+        output_file: Optional[Path | str] = None,
+    ) -> None:
+        self.client = client
+        self.config = config
+        self.month = month
+        self.year = year
+        self.resume = resume
+        self.skip_download = skip_download
+        self.insert_blank_page = insert_blank_page
+        self.output_file = output_file
+        self._cancelled = False
+
+        import calendar
+        last_day = calendar.monthrange(year, month)[1]
+        start_str = f"01/{month:02d}/{year}"
+        end_str = f"{last_day:02d}/{month:02d}/{year}"
+
+        self.date_engine = date_engine or HTTPDateEngine(
+            start_date=start_str,
+            end_date=end_str,
+        )
+
+        signal.signal(signal.SIGINT, self._handle_signal)
+        signal.signal(signal.SIGTERM, self._handle_signal)
+
+    def _handle_signal(self, signum: int, frame) -> None:
+        logger.warning(f"Cashbook runner received interrupt signal {signum}. Halting gracefully...")
+        self._cancelled = True
+
+    def _is_file_valid(self, path: Path) -> bool:
+        """Check if PDF file exists and is valid."""
+        if not path.exists():
+            return False
+        try:
+            with open(path, "rb") as f:
+                content = f.read()
+            is_valid, _, page_count = validate_pdf_data(content)
+            return is_valid and page_count >= 1
+        except Exception:
+            return False
+
+    def _fetch_and_save_bank_statement(self, item: DateItem, target_path: Path) -> bool:
+        """Fetch and render Bank Account Statement."""
+        try:
+            resp = self.client.fetch_bank_statement(item.date_str)
+            val_res = ReportParser.validate_response(resp.text)
+            if val_res.is_empty:
+                logger.info(f"  -> [1/3] Bank Statement: No account records on portal for {item.date_str}.")
+                return False
+            if not val_res.is_valid:
+                logger.warning(f"  -> [1/3] Bank Statement: Notice for {item.date_str} ({val_res.error_message})")
+                return False
+            clean_html = ReportParser.extract_clean_printable_html(resp.text)
+            render_html_to_pdf(clean_html, target_path)
+            logger.info(f"  -> [1/3] Bank Statement: Saved {target_path.name} ({val_res.record_count} accounts)")
+            return True
+        except SessionExpiredError as e:
+            logger.error(f"  -> [1/3] Bank Statement: Session expired ({e}). Set valid KDMC_SESSION_COOKIE in .env.")
+            return False
+        except Exception as e:
+            logger.error(f"  -> [1/3] Bank Statement: Failed for {item.date_str}: {e}")
+            return False
+
+    def _fetch_and_save_deposit_slip(self, item: DateItem, target_path: Path) -> bool:
+        """Fetch Deposit Slip and save 1-page summary."""
+        try:
+            resp = self.client.fetch_deposit_slip(item.date_str)
+            if resp.content.startswith(b"%PDF-"):
+                save_pdf_bytes(resp.content, target_path, last_page_only=True)
+                logger.info(f"  -> [2/3] Deposit Slip:   Saved {target_path.name} (1-page summary)")
+                return True
+            else:
+                logger.error(f"  -> [2/3] Deposit Slip:   Unexpected response: {resp.text[:200]}")
+                return False
+        except Exception as e:
+            logger.error(f"  -> [2/3] Deposit Slip:   Failed for {item.date_str}: {e}")
+            return False
+
+    def _fetch_and_save_payment_slip(self, item: DateItem, target_path: Path) -> bool:
+        """Fetch Payment Slip and save 1-page summary."""
+        try:
+            resp = self.client.fetch_payment_slip(item.date_str)
+            if resp.content.startswith(b"%PDF-"):
+                save_pdf_bytes(resp.content, target_path, last_page_only=True)
+                logger.info(f"  -> [3/3] Payment Slip:   Saved {target_path.name} (1-page summary)")
+                return True
+            else:
+                logger.error(f"  -> [3/3] Payment Slip:   Unexpected response: {resp.text[:200]}")
+                return False
+        except Exception as e:
+            logger.error(f"  -> [3/3] Payment Slip:   Failed for {item.date_str}: {e}")
+            return False
+
+    def run(self) -> Tuple[Optional[Path], int, int]:
+        """
+        Execute full-month Cashbook workflow:
+        1. Downloads missing Bank Statements, Deposit Slips, and Payment Slips for every date.
+        2. Compiles the Final Cashbook PDF in exact order with blank pages in between.
+        Returns: (cashbook_path, total_reports_merged, total_pages)
+        """
+        import calendar
+        month_name = calendar.month_name[self.month]
+        out_dir = Path(self.config.output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        items = self.date_engine.get_all_items()
+        included_items = [it for it in items if it.is_included]
+        total_days = len(included_items)
+
+        logger.info("=" * 70)
+        logger.info(f"  FLASH AUTOMATOR: FULL MONTH CASHBOOK WORKFLOW ({month_name} {self.year})")
+        logger.info(f"  Period: {self.month:02d}/{self.year} ({total_days} scheduled days)")
+        logger.info("  Order per Day: Bank Statement -> Deposit Slip -> Payment Slip")
+        logger.info("  Branch: Ward 4 / HO Main Branch (Enforced for all reports)")
+        logger.info("=" * 70)
+
+        if not self.skip_download:
+            # Refresh CSRF token for BAS if session cookie configured
+            if self.client.session_manager.has_session_cookie and not self.client.session_manager.csrf_token:
+                logger.info("Initializing session and synchronizing CSRF token with portal...")
+                self.client.refresh_csrf_token()
+
+            day_idx = 1
+            for item in items:
+                if self._cancelled:
+                    logger.warning("Cashbook processing halted due to cancellation.")
+                    break
+
+                if not item.is_included:
+                    logger.info(f"[{item.date_str}] Skipped date: {item.skip_reason}")
+                    continue
+
+                logger.info(f"[{day_idx:02d}/{total_days:02d}] Processing {item.date_str} ({item.weekday_name}):")
+
+                # Paths
+                bank_path = out_dir / generate_filename(item.date, prefix="BankStatement")
+                dep_path = out_dir / generate_filename(item.date, prefix="DepositSlip")
+                pay_path = out_dir / generate_filename(item.date, prefix="PaymentSlip")
+
+                # 1. Bank Statement
+                bank_needed = self.config.overwrite or not (self.resume and self._is_file_valid(bank_path))
+                if not bank_needed:
+                    logger.info(f"  -> [1/3] Bank Statement: Already downloaded ({bank_path.name})")
+                else:
+                    logger.info(f"  -> [1/3] Bank Statement: Requesting from portal (HO Main Branch)...")
+                    downloaded = self._fetch_and_save_bank_statement(item, bank_path)
+                    if downloaded:
+                        time.sleep(self.config.request_delay)
+
+                # 2. Deposit Slip
+                dep_needed = self.config.overwrite or not (self.resume and self._is_file_valid(dep_path))
+                if not dep_needed:
+                    logger.info(f"  -> [2/3] Deposit Slip:   Already downloaded ({dep_path.name})")
+                else:
+                    logger.info(f"  -> [2/3] Deposit Slip:   Requesting from BIRT server (HO Main Branch)...")
+                    downloaded = self._fetch_and_save_deposit_slip(item, dep_path)
+                    if downloaded:
+                        time.sleep(self.config.request_delay)
+
+                # 3. Payment Slip
+                pay_needed = self.config.overwrite or not (self.resume and self._is_file_valid(pay_path))
+                if not pay_needed:
+                    logger.info(f"  -> [3/3] Payment Slip:   Already downloaded ({pay_path.name})")
+                else:
+                    logger.info(f"  -> [3/3] Payment Slip:   Requesting from BIRT server (HO Main Branch)...")
+                    downloaded = self._fetch_and_save_payment_slip(item, pay_path)
+                    if downloaded:
+                        time.sleep(self.config.request_delay)
+
+                day_idx += 1
+
+        # Step 2: Compile Final Cashbook
+        logger.info("=" * 70)
+        logger.info(f"  ASSEMBLING FINAL CASHBOOK: {month_name} {self.year}")
+        logger.info("  Sequence: Bank Statement -> [blank] -> Deposit Slip -> [blank] -> Payment Slip -> [blank]")
+        logger.info("=" * 70)
+
+        from app.pdf_merge import generate_final_cashbook
+        cashbook_path, total_reports, total_pages = generate_final_cashbook(
+            input_dir=self.config.output_dir,
+            output_path=self.output_file,
+            month=self.month,
+            year=self.year,
+            insert_blank_page=self.insert_blank_page,
+        )
+
+        logger.info(f"Successfully generated Final Cashbook: {cashbook_path}")
+        logger.info(f"Total Daily Reports Merged: {total_reports}")
+        logger.info(f"Total Pages in Cashbook:    {total_pages}")
+        logger.info(f"Cashbook File Size:         {cashbook_path.stat().st_size:,} bytes")
+        return cashbook_path, total_reports, total_pages
