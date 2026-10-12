@@ -59,16 +59,28 @@ class SessionManager:
     def apply_to_session(self, session: requests.Session) -> None:
         """Inject session cookie and base headers into requests.Session."""
         if self.session_cookie:
-            session.cookies.set(
-                name="JSESSIONID",
-                value=self.session_cookie,
-                domain=self.domain,
-                path="/",
-            )
-            # Also attach cookie header directly as fallback
-            session.headers.update({
-                "Cookie": f"JSESSIONID={self.session_cookie}"
-            })
+            cookie_str = self.session_cookie.strip()
+            # If the user pasted multiple cookies or key=value pairs
+            if ";" in cookie_str or "=" in cookie_str:
+                for part in cookie_str.split(";"):
+                    part = part.strip()
+                    if "=" in part:
+                        c_name, c_val = part.split("=", 1)
+                        session.cookies.set(name=c_name.strip(), value=c_val.strip(), domain=self.domain, path="/")
+                    elif part:
+                        session.cookies.set(name="JSESSIONID", value=part.strip(), domain=self.domain, path="/")
+                if "JSESSIONID=" not in cookie_str:
+                    session.headers["Cookie"] = f"JSESSIONID={cookie_str}"
+                else:
+                    session.headers["Cookie"] = cookie_str
+            else:
+                session.cookies.set(
+                    name="JSESSIONID",
+                    value=cookie_str,
+                    domain=self.domain,
+                    path="/",
+                )
+                session.headers["Cookie"] = f"JSESSIONID={cookie_str}"
 
         if self.csrf_token:
             session.headers.update({"X-CSRF-TOKEN": self.csrf_token})
@@ -103,9 +115,10 @@ class SessionManager:
 
         if match:
             token = match.group(1).strip()
-            self.csrf_token = token
-            register_secret(token)
-            return token
+            if token and len(token) > 5:
+                self.csrf_token = token
+                register_secret(token)
+                return token
 
         return None
 
@@ -127,8 +140,12 @@ class SessionManager:
                 return True, f"Redirected to login endpoint: {location}"
 
         # 3. Final URL check
-        if response.url and "login.html" in response.url.lower():
-            return True, f"Session redirected to login URL: {response.url}"
+        if response.url:
+            low_url = response.url.lower()
+            if "login.html" in low_url:
+                return True, f"Session redirected to login URL: {response.url}"
+            if "home.html" in low_url and "accountdailyreports" not in low_url:
+                return True, "Session expired or invalid: portal redirected to unauthenticated Home page (Home.html)."
 
         # 4. Response body inspection
         text = response.text or ""

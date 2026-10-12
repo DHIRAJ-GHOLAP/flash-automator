@@ -34,6 +34,24 @@ class KDMCNetworkError(KDMCClientError):
     pass
 
 
+from urllib3.util.ssl_ import create_urllib3_context
+
+
+class KDMCSSLAdapter(HTTPAdapter):
+    """
+    SSL adapter that configures compatible cipher suites (DEFAULT:@SECLEVEL=2)
+    to prevent TLS handshake resets from legacy government portal firewalls.
+    """
+
+    def init_poolmanager(self, *args, **kwargs):
+        try:
+            ctx = create_urllib3_context(ciphers="DEFAULT:@SECLEVEL=2")
+            kwargs["ssl_context"] = ctx
+        except Exception:
+            pass
+        return super().init_poolmanager(*args, **kwargs)
+
+
 class KDMCClient:
     """
     Client for interacting with the KDMC MyNet municipal portal.
@@ -51,6 +69,7 @@ class KDMCClient:
             csrf_token=config.csrf_token,
         )
         self.session = session or requests.Session()
+        self.session.mount("https://", KDMCSSLAdapter())
 
         # Configure headers
         self.session.headers.update({
